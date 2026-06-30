@@ -1,0 +1,30 @@
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Acceptance suite
+        run: uv run pytest tests/acceptance/ -v
+
+      # Note globale bloquante : le script d'évaluation calcule la note et
+      # sort en erreur sous le seuil, ce qui rejette la livraison.
+      # Décommenter une fois `python -m velmo.mlops.score` disponible :
+      # - name: Quality gate
+      #   run: uv run python -m velmo.mlops.score --min-score 0.8

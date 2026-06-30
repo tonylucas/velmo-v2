@@ -1,0 +1,37 @@
+services:
+  app:
+    build: .
+    image: velmo-v2
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chroma:
+        condition: service_started
+    # Conteneur maintenu actif ; ouvrir le chat avec :
+    #   docker compose exec app uv run python -m velmo.cli
+    command: ["tail", "-f", "/dev/null"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: velmo
+    ports:
+      - "5432:5432"
+    volumes:
+      - .docker-data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d velmo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - .docker-data/chroma:/chroma/chroma
