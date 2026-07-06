@@ -49,3 +49,6 @@ chroma-data/
 # MLOps run artifacts
 mlops/report.md
 mlops/*.json
+
+# Spec-kit
+.specify/feature.json
