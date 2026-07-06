@@ -8,24 +8,35 @@ Velmo 2.0 est un agent de support client pour une boutique de maillots de foot c
 
 Projet de formation en IA agentique — reconstruction complète à partir de zéro sur trois piliers : **Mémoire**, **Garde-fous**, **Évaluation & MLOps**. Voir `brief.md` (énoncé pédagogique) et `docs/reco_expert.md` (note de cadrage technique de l'expert externe, qui impose la stack ci-dessous).
 
-Ce repo est le **scaffold réel** à partir duquel construire (base + outils métier déjà fonctionnels). Les specs `specs/00X-*` ont été migrées depuis un prototype spec-kit antérieur ; voir `ROADMAP.md` pour l'état exact (spec/plan/tasks/implémentation) de chaque chantier.
+La phrase de `docs/reco_expert.md` sur un agent « rapiécé une fois de trop » désigne le code actuel de ce dépôt (`src/velmo/agent.py` et son routage regex, `MemoryManager`/`GuardrailEngine` stubbés) tel qu'il existe avant les chantiers de reconstruction — pas un projet distinct. Ce dépôt (`velmo-v2`) a été forké aujourd'hui depuis le projet où le code et les specs `specs/00X-*` avaient déjà été élaborés séparément (specs écrites via un exercice **spec-kit** antérieur) ; son historique git court ne reflète que la date du fork, pas l'ancienneté du code. Voir `ROADMAP.md` pour l'état exact (spec/plan/tasks/implémentation) de chaque chantier.
 
 ## Stack imposée (`docs/reco_expert.md`)
 
 - **LLM** : Azure AI Inference (Kimi-K2.6) via `langchain-azure-ai` — cf. `src/velmo/llm.py`. Pas de modèle local en prod (repli `EchoLLM` hors-ligne pour dev/tests).
-- **État conversationnel & préférences durables** : PostgreSQL (SQLAlchemy + Alembic) — source de vérité des faits durables par utilisateur (`src/velmo/db.py`).
-- **Mémoire long terme épisodique** : ChromaDB (recherche par similarité), embeddings `intfloat/multilingual-e5-small` (extra `vector`).
+- **Mémoire long terme (faits durables & épisodique)** : ChromaDB (recherche par similarité), embeddings `intfloat/multilingual-e5-small` (extra `vector`).
 - **CI** : GitHub Actions, blocage de livraison sous seuil de qualité.
 
-**Important** : les artefacts de planification (`plan.md`/`tasks.md`/`data-model.md`) des prototypes spec-kit pour 001/002 décrivaient une architecture LangGraph + `AsyncPostgresSaver` + LangMem incompatible avec cette stack et avec le scaffold existant (`Agent.respond()` synchrone, `MemoryManager`/`GuardrailEngine` déjà stubbés dans `src/velmo/`). Ils ont été volontairement omis de la migration — à regénérer via `/speckit-plan` en respectant l'architecture réelle du repo.
+PostgreSQL (`src/velmo/db.py`) reste utilisé pour les données métier (catalogue, commandes, clients) et pour l'état conversationnel via le checkpointer LangGraph (`AsyncPostgresSaver`) — pas pour les faits durables, qui vivent entièrement dans Chroma (cf. `specs/002-long-term-memory/spec.md`).
+
+**Important** : les artefacts de planification (`plan.md`/`tasks.md`/`data-model.md`) des prototypes spec-kit pour 001/002 n'ont volontairement pas été migrés — à régénérer via `/speckit-plan`. Décision d'architecture actée (voir `docs/superpowers/specs/2026-07-06-agent-runtime-langgraph-design.md`) : l'agent runtime est un **agent LangGraph** (StateGraph + `AsyncPostgresSaver` + LangMem comme extracteur de faits seul), qui remplace le routage par regex de `Agent._handle()`. Les `spec.md` de 001/002 restent inchangées — elles anticipaient déjà cette forme (composants `Checkpointer`/`LangMemExtractor` dans leurs schémas de séquence) sans l'imposer dans leurs exigences.
 
 ## Architecture cible
 
 ```
-entrée → garde-fou d'entrée → mémoire (lecture) → LLM → garde-fou de sortie → mémoire (écriture) → réponse
+entrée → garde-fou d'entrée → mémoire (lecture) → agent LangGraph (tool-calling) → garde-fou de sortie → mémoire (écriture) → réponse
 ```
 
-Aujourd'hui implémenté par `Agent.respond()` (`src/velmo/agent.py`), qui orchestre `GuardrailEngine` (`src/velmo/guardrails/`), `MemoryManager` (`src/velmo/memory/`) et les outils (`src/velmo/tools/`).
+`Agent.respond()` (`src/velmo/agent.py`) devient asynchrone et orchestre un `StateGraph` LangGraph
+compilé avec `AsyncPostgresSaver` (`thread_id = user_id`) : nœuds `garde-fou-in → mémoire-read →
+agent (create_react_agent + outils métier) → garde-fou-out → mémoire-write`. Le nœud agent
+utilise le LLM Azure déjà intégré avec `bind_tools`, remplaçant le routage regex. `db.py` et
+`tools/*.py` restent synchrones ; les nœuds async y accèdent via `asyncio.to_thread(...)`.
+
+Le checkpoint LangGraph ne contient que la fenêtre courte glissante (R1/R4) ; les faits durables
+(R2/R5/R6, sémantiques et épisodiques) vivent entièrement dans Chroma, jamais dans l'état
+checkpointé — suppression et inspection via filtres de métadonnées exacts (`user_id`,
+`fact_type`), pas de recherche par similarité, pour que le droit à l'oubli reste vérifiable.
+Détail complet : `docs/superpowers/specs/2026-07-06-agent-runtime-langgraph-design.md`.
 
 ### Outils de l'agent
 
