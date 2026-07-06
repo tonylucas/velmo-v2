@@ -202,7 +202,7 @@ def _escalations() -> list[Escalation]:
 
 def seed(session) -> None:
     """Insère le jeu de données de référence dans la session fournie."""
-    for batch in (
+    batches = (
         _customers(),
         _products(),
         _variants(),
@@ -212,6 +212,8 @@ def seed(session) -> None:
         _returns(),
         _refunds(),
         _escalations(),
-    ):
+    )
+    for batch in batches:
         session.add_all(batch)
+        session.flush()  # Flush après chaque insertion pour "pusher" les identifiants, s'il y a génération auto.
     session.commit()
