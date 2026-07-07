@@ -13,7 +13,7 @@ import re
 from . import tools
 from .guardrails import GuardrailEngine
 from .llm import LLM, get_llm
-from .memory import MemoryManager
+from .memory import MemoryContext, MemoryManager
 
 SYSTEM_PROMPT = (
     "Tu es l'assistant de support de Velmo, boutique de maillots de foot collector. "
@@ -74,8 +74,8 @@ class Agent:
             self.memory.write(user_id, message, refusal)
             return refusal
 
-        self.memory.read(user_id, message)
-        answer = self._handle(user_id, message)
+        context = self.memory.read(user_id, message)
+        answer = self._handle(user_id, message, context)
 
         gate_out = self.guardrails.check_output(answer)
         if not gate_out.allowed:
@@ -86,7 +86,7 @@ class Agent:
 
     # --- routage déterministe ------------------------------------------------
 
-    def _handle(self, user_id: str, message: str) -> str:
+    def _handle(self, user_id: str, message: str, context: MemoryContext) -> str:
         low = message.lower()
         order = ORDER_RE.search(message)
         order_id = order.group(0) if order else None
@@ -135,7 +135,7 @@ class Agent:
         if any(k in low for k in _FAQ_KEYWORDS):
             return self._format_kb(tools.search_kb(self.kb, message))
 
-        return self.llm.invoke(SYSTEM_PROMPT, "", message)
+        return self.llm.invoke(SYSTEM_PROMPT, context.render(), message)
 
     def _confirm_or_act(self, confirmed: bool, label: str, order_id: str, action) -> str:
         if not confirmed:
