@@ -1,14 +1,18 @@
-"""Mémoire de l'agent Velmo : contexte court terme et mémoire long terme.
+"""Mémoire de l'agent Velmo : fenêtre courte (checkpointer LangGraph) et faits
+durables (Chroma), isolées par utilisateur.
 
 Surface publique stable consommée par l'agent et la suite d'acceptance.
-L'implémentation interne (court terme, long terme, orchestration) est à construire.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import checkpoint, facts
+
 Turn = tuple[str, str]  # (role, content)
+
+DEFAULT_WINDOW_SIZE = 30
 
 
 @dataclass
@@ -33,20 +37,45 @@ class MemoryContext:
 class MemoryManager:
     """Orchestre la mémoire court terme et long terme, isolée par utilisateur."""
 
-    def __init__(self, *, token_budget: int = 2000) -> None:
-        self.token_budget = token_budget
+    def __init__(
+        self,
+        *,
+        db_url: str | None = None,
+        chroma_url: str | None = None,
+        window_size: int = DEFAULT_WINDOW_SIZE,
+    ) -> None:
+        self._graph = checkpoint.build_history_graph(checkpoint.build_checkpointer(db_url))
+        self._collection = facts.get_collection(chroma_url)
+        self._window_size = window_size
 
     def read(self, user_id: str, message: str) -> MemoryContext:
         """Reconstitue le contexte mémoire pertinent pour `message`."""
-        return MemoryContext()
+        history_messages = checkpoint.get_history(self._graph, user_id)
+        history = [(m.type, m.content) for m in history_messages]
+        episodic = facts.search(self._collection, user_id, message)
+        return MemoryContext(history=history, episodic=episodic)
 
     def write(self, user_id: str, user_message: str, assistant_message: str) -> None:
         """Met à jour la mémoire à partir d'un échange."""
-        return None
+        checkpoint.append_turn(self._graph, user_id, user_message, assistant_message)
+        self._enforce_window(user_id)
+
+    def _enforce_window(self, user_id: str) -> None:
+        """R4 : au-delà du seuil, transfère les messages les plus anciens vers Chroma."""
+        messages = checkpoint.get_history(self._graph, user_id)
+        overflow = len(messages) - self._window_size
+        if overflow <= 0:
+            return
+        evicted = messages[:overflow]
+        for evicted_message in evicted:
+            facts.store_excerpt(
+                self._collection, user_id, f"{evicted_message.type}: {evicted_message.content}"
+            )
+        checkpoint.remove_messages(self._graph, user_id, [m.id for m in evicted])
 
     def remember_fact(self, user_id: str, key: str, value: str) -> None:
         """Persiste un fait durable sur l'utilisateur."""
-        return None
+        facts.remember(self._collection, user_id, key, value)
 
     def forget(self, user_id: str, target: str) -> int:
         """Supprime les souvenirs correspondant à `target`. Renvoie le nombre supprimé."""
