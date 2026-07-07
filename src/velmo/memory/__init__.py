@@ -52,8 +52,9 @@ class MemoryManager:
         """Reconstitue le contexte mémoire pertinent pour `message`."""
         history_messages = checkpoint.get_history(self._graph, user_id)
         history = [(m.type, m.content) for m in history_messages]
-        episodic = facts.search(self._collection, user_id, message)
-        return MemoryContext(history=history, episodic=episodic)
+        preference_facts = facts.preferences(self._collection, user_id)
+        episodic = facts.search(self._collection, user_id, message, fact_type="episodic_excerpt")
+        return MemoryContext(history=history, facts=preference_facts, episodic=episodic)
 
     def write(self, user_id: str, user_message: str, assistant_message: str) -> None:
         """Met à jour la mémoire à partir d'un échange."""
@@ -78,8 +79,22 @@ class MemoryManager:
         facts.remember(self._collection, user_id, key, value)
 
     def forget(self, user_id: str, target: str) -> int:
-        """Supprime les souvenirs correspondant à `target`. Renvoie le nombre supprimé."""
-        return 0
+        """Supprime les souvenirs correspondant à `target`. Renvoie le nombre supprimé.
+
+        Purge à la fois la fenêtre courte (checkpointer) et les faits durables
+        (Chroma) : l'information ciblée peut se trouver dans l'une, l'autre, ou
+        les deux (cf. docs/superpowers/specs/2026-07-06-agent-runtime-langgraph-design.md).
+        """
+        removed = facts.delete_matching(self._collection, user_id, target)
+
+        target_low = target.lower()
+        messages = checkpoint.get_history(self._graph, user_id)
+        matching = [m for m in messages if target_low in m.content.lower()]
+        if matching:
+            checkpoint.remove_messages(self._graph, user_id, [m.id for m in matching])
+            removed += len(matching)
+
+        return removed
 
     def inspect(self, user_id: str) -> dict:
         """Renvoie l'état mémoire d'un utilisateur (faits + souvenirs épisodiques)."""

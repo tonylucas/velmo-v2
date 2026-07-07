@@ -65,10 +65,33 @@ def store_excerpt(collection, user_id: str, text: str) -> None:
     )
 
 
-def search(collection, user_id: str, query: str, k: int = 5) -> list[str]:
-    """Recherche sémantique des faits/extraits pertinents pour cet utilisateur."""
-    result = collection.query(query_texts=[query], n_results=k, where={"user_id": user_id})
+def search(
+    collection, user_id: str, query: str, k: int = 5, fact_type: str | None = None
+) -> list[str]:
+    """Recherche sémantique des faits/extraits pertinents pour cet utilisateur.
+
+    La recherche par similarité (HNSW) n'est pas garantie exhaustive même avec un
+    filtre `where` exact : à ne réserver qu'aux entrées pour lesquelles un rappel
+    partiel est acceptable (extraits épisodiques). Les faits qui doivent être
+    systématiquement disponibles (`preference`) passent par `preferences()`.
+    """
+    where = (
+        {"user_id": user_id}
+        if fact_type is None
+        else {"$and": [{"user_id": user_id}, {"fact_type": fact_type}]}
+    )
+    result = collection.query(query_texts=[query], n_results=k, where=where)
     return list(result.get("documents", [[]])[0])
+
+
+def preferences(collection, user_id: str) -> dict[str, str]:
+    """Tous les faits `preference` d'un utilisateur (lecture exacte, jamais de similarité)."""
+    got = collection.get(where={"$and": [{"user_id": user_id}, {"fact_type": "preference"}]})
+    return {
+        meta.get("key", ""): doc
+        for doc, meta in zip(got["documents"], got["metadatas"])
+        if meta and meta.get("key")
+    }
 
 
 def all_facts(collection, user_id: str) -> list[dict]:
