@@ -40,6 +40,8 @@ def test_delete_matching_removes_and_counts():
 
 def test_store_excerpt_is_searchable():
     collection = facts.get_collection()
-    facts.store_excerpt(collection, "unit-facts-excerpt", "human: Ma commande prioritaire est O-2024-0101.")
+    facts.store_excerpt(
+        collection, "unit-facts-excerpt", "human: Ma commande prioritaire est O-2024-0101."
+    )
     hits = facts.search(collection, "unit-facts-excerpt", "Quelle etait ma commande prioritaire ?")
     assert any("O-2024-0101" in h for h in hits)

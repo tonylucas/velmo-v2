@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import os
 import threading
+from typing import Any
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+
+History = CompiledStateGraph[MessagesState, Any, MessagesState, MessagesState]
 
 _offline_lock = threading.Lock()
 _offline_saver: InMemorySaver | None = None
@@ -38,21 +42,23 @@ def _shared_offline_saver() -> InMemorySaver:
         return _offline_saver
 
 
-def build_checkpointer(db_url: str | None = None) -> BaseCheckpointSaver:
+def build_checkpointer(db_url: str | None = None) -> BaseCheckpointSaver[str]:
     """Postgres si `db_url`/`DB_URL` configuré, sinon repli mémoire partagé."""
     url = db_url or os.getenv("DB_URL")
     if not url:
         return _shared_offline_saver()
 
     from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg import Connection
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
-    pool = ConnectionPool(
+    pool: ConnectionPool[Connection[dict[str, Any]]] = ConnectionPool(
         url,
         min_size=1,
         max_size=5,
         open=True,
+        connection_class=Connection[dict[str, Any]],
         kwargs={"autocommit": True, "row_factory": dict_row},
     )
     saver = PostgresSaver(pool)
@@ -60,11 +66,11 @@ def build_checkpointer(db_url: str | None = None) -> BaseCheckpointSaver:
     return saver
 
 
-def _passthrough(state: MessagesState) -> dict:
+def _passthrough(state: MessagesState) -> dict[str, Any]:
     return {}
 
 
-def build_history_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph:
+def build_history_graph(checkpointer: BaseCheckpointSaver[str]) -> History:
     """Graphe à un seul nœud : accumule les messages, persistés par `checkpointer`."""
     graph = StateGraph(MessagesState)
     graph.add_node("passthrough", _passthrough)
@@ -73,13 +79,11 @@ def build_history_graph(checkpointer: BaseCheckpointSaver) -> CompiledStateGraph
     return graph.compile(checkpointer=checkpointer)
 
 
-def _config(user_id: str) -> dict:
+def _config(user_id: str) -> RunnableConfig:
     return {"configurable": {"thread_id": user_id}}
 
 
-def append_turn(
-    graph: CompiledStateGraph, user_id: str, user_message: str, assistant_message: str
-) -> None:
+def append_turn(graph: History, user_id: str, user_message: str, assistant_message: str) -> None:
     """Ajoute un tour (message utilisateur + réponse) à l'historique persistant."""
     graph.invoke(
         {"messages": [HumanMessage(content=user_message), AIMessage(content=assistant_message)]},
@@ -87,7 +91,7 @@ def append_turn(
     )
 
 
-def get_history(graph: CompiledStateGraph, user_id: str) -> list[BaseMessage]:
+def get_history(graph: History, user_id: str) -> list[BaseMessage]:
     """Historique complet actuel (fenêtre courte), le plus ancien en premier."""
     state = graph.get_state(_config(user_id))
     if not state.values:
@@ -95,7 +99,7 @@ def get_history(graph: CompiledStateGraph, user_id: str) -> list[BaseMessage]:
     return list(state.values.get("messages", []))
 
 
-def remove_messages(graph: CompiledStateGraph, user_id: str, message_ids: list[str]) -> None:
+def remove_messages(graph: History, user_id: str, message_ids: list[str]) -> None:
     """Supprime des messages précis de l'historique (par id) — R4 (troncature) et R5 (oubli)."""
     if not message_ids:
         return

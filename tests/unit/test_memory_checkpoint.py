@@ -16,8 +16,14 @@ def test_history_isolated_by_user():
     graph = checkpoint.build_history_graph(checkpoint.build_checkpointer())
     checkpoint.append_turn(graph, "unit-user-a", "msg a", "reponse a")
     checkpoint.append_turn(graph, "unit-user-b", "msg b", "reponse b")
-    assert [m.content for m in checkpoint.get_history(graph, "unit-user-a")] == ["msg a", "reponse a"]
-    assert [m.content for m in checkpoint.get_history(graph, "unit-user-b")] == ["msg b", "reponse b"]
+    assert [m.content for m in checkpoint.get_history(graph, "unit-user-a")] == [
+        "msg a",
+        "reponse a",
+    ]
+    assert [m.content for m in checkpoint.get_history(graph, "unit-user-b")] == [
+        "msg b",
+        "reponse b",
+    ]
 
 
 def test_remove_messages_by_id():

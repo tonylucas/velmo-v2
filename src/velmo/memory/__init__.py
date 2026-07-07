@@ -7,6 +7,7 @@ Surface publique stable consommée par l'agent et la suite d'acceptance.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from . import checkpoint, facts
 
@@ -51,7 +52,7 @@ class MemoryManager:
     def read(self, user_id: str, message: str) -> MemoryContext:
         """Reconstitue le contexte mémoire pertinent pour `message`."""
         history_messages = checkpoint.get_history(self._graph, user_id)
-        history = [(m.type, m.content) for m in history_messages]
+        history = [(m.type, str(m.content)) for m in history_messages]
         preference_facts = facts.preferences(self._collection, user_id)
         episodic = facts.search(self._collection, user_id, message, fact_type="episodic_excerpt")
         return MemoryContext(history=history, facts=preference_facts, episodic=episodic)
@@ -72,7 +73,7 @@ class MemoryManager:
             facts.store_excerpt(
                 self._collection, user_id, f"{evicted_message.type}: {evicted_message.content}"
             )
-        checkpoint.remove_messages(self._graph, user_id, [m.id for m in evicted])
+        checkpoint.remove_messages(self._graph, user_id, [m.id for m in evicted if m.id])
 
     def remember_fact(self, user_id: str, key: str, value: str) -> None:
         """Persiste un fait durable sur l'utilisateur."""
@@ -89,14 +90,14 @@ class MemoryManager:
 
         target_low = target.lower()
         messages = checkpoint.get_history(self._graph, user_id)
-        matching = [m for m in messages if target_low in m.content.lower()]
+        matching = [m for m in messages if target_low in str(m.content).lower()]
         if matching:
-            checkpoint.remove_messages(self._graph, user_id, [m.id for m in matching])
+            checkpoint.remove_messages(self._graph, user_id, [str(m.id) for m in matching])
             removed += len(matching)
 
         return removed
 
-    def inspect(self, user_id: str) -> dict:
+    def inspect(self, user_id: str) -> dict[str, Any]:
         """Renvoie l'état mémoire d'un utilisateur (faits + souvenirs épisodiques)."""
         entries = facts.all_facts(self._collection, user_id)
         facts_by_key = {e["key"]: e["content"] for e in entries if e.get("key")}
