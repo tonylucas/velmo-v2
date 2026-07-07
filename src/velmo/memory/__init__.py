@@ -98,4 +98,7 @@ class MemoryManager:
 
     def inspect(self, user_id: str) -> dict:
         """Renvoie l'état mémoire d'un utilisateur (faits + souvenirs épisodiques)."""
-        return {"facts": {}, "episodic": []}
+        entries = facts.all_facts(self._collection, user_id)
+        facts_by_key = {e["key"]: e["content"] for e in entries if e.get("key")}
+        episodic = [e["content"] for e in entries if not e.get("key")]
+        return {"facts": facts_by_key, "episodic": episodic}
