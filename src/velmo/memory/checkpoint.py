@@ -53,8 +53,12 @@ def build_checkpointer(db_url: str | None = None) -> BaseCheckpointSaver[str]:
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
+    # psycopg (libpq) attend une URI "postgresql://", pas le suffixe de dialecte
+    # SQLAlchemy "+psycopg" utilisé par DB_URL pour db.py.
+    libpq_url = url.replace("postgresql+psycopg://", "postgresql://", 1)
+
     pool: ConnectionPool[Connection[dict[str, Any]]] = ConnectionPool(
-        url,
+        libpq_url,
         min_size=1,
         max_size=5,
         open=True,
