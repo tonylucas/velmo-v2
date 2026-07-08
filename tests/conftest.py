@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
 from velmo.agent import Agent
 from velmo.db import fresh_sqlite_session
@@ -27,6 +29,18 @@ def seeded_session():
     session = fresh_sqlite_session()
     seed(session)
     return session
+
+
+class ScriptedToolCallingChatModel(FakeMessagesListChatModel):
+    """Fake chat model that accepts bind_tools (returns itself) so it can drive
+    `create_agent` with a scripted sequence of tool-calling messages.
+
+    `FakeMessagesListChatModel` alone raises NotImplementedError on bind_tools,
+    which `create_agent` calls internally.
+    """
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "ScriptedToolCallingChatModel":
+        return self
 
 
 class AllowAllGuardrails:
