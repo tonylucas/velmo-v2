@@ -13,7 +13,7 @@ from velmo.agent import Agent
 from velmo.db import fresh_sqlite_session
 from velmo.guardrails import Decision, GuardrailEngine
 from velmo.kb_store import LocalKB
-from velmo.llm import EchoLLM
+from velmo.llm import OfflineChatModel
 from velmo.memory import MemoryManager
 from velmo.sampledata import seed
 
@@ -58,7 +58,7 @@ class AllowAllGuardrails:
 
 def build_reference_agent() -> Agent:
     return Agent(
-        llm=EchoLLM(),
+        chat_model=OfflineChatModel(),
         memory=MemoryManager(),
         guardrails=GuardrailEngine(),
         session=seeded_session(),
@@ -68,7 +68,7 @@ def build_reference_agent() -> Agent:
 
 def build_degraded_agent() -> Agent:
     return Agent(
-        llm=EchoLLM(),
+        chat_model=OfflineChatModel(),
         memory=MemoryManager(),
         guardrails=AllowAllGuardrails(),
         session=seeded_session(),

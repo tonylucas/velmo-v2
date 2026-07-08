@@ -61,7 +61,7 @@ uv run pytest tests/ -k isolation
 ```
 
 Le coeur tourne **entièrement hors-ligne** : SQLite en mémoire pour les tests, `LocalKB` (TF-IDF local)
-pour la FAQ, `EchoLLM` pour le LLM. Les intégrations réelles (Postgres, Chroma, Azure AI Inference) ne
+pour la FAQ, `OfflineChatModel` pour le LLM. Les intégrations réelles (Postgres, Chroma, Azure AI Inference) ne
 s'activent que si les variables d'env correspondantes sont présentes (`DB_URL`, `CHROMA_URL`,
 `AZURE_AI_INFERENCE_ENDPOINT`) — voir `.env.example`. Ça veut dire qu'on peut développer/tester `memory`,
 `guardrails`, `mlops` sans docker compose ni credentials.
@@ -137,10 +137,11 @@ la même interface `search(query, k) -> list[dict]` avec `source`/`snippet`.
 
 ### LLM (`src/velmo/llm.py`)
 
-`get_llm()` retourne `AzureLLM` (Kimi-K2.6 via `langchain-azure-ai`, import différé) si
-`AZURE_AI_INFERENCE_ENDPOINT` est défini, sinon `EchoLLM` (accusé de réception déterministe). Le LLM
-n'est appelé qu'en dernier recours dans `Agent._handle` — la majorité des intentions métier sont
-routées sans LLM.
+`get_chat_model()` retourne un `AzureAIOpenAIApiChatModel` (Kimi-K2.6 via `langchain-azure-ai`, import
+différé) si `AZURE_AI_INFERENCE_ENDPOINT` est défini, sinon `OfflineChatModel` (accusé de réception
+déterministe, sans tool-calling). L'agent est un `StateGraph` (`velmo.agent_graph`) : le nœud
+déterministe (`velmo.routing`) route la majorité des intentions sans LLM, et ne bascule sur le nœud LLM
+outillé (`create_agent` + `build_tools`) que lorsqu'aucune règle ne matche.
 
 ### Tests (`tests/`)
 
