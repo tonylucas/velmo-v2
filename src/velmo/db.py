@@ -21,6 +21,7 @@ from sqlalchemy import (
     create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 class Base(DeclarativeBase):
@@ -174,7 +175,18 @@ def session_factory(url: str | None = None):
 
 
 def fresh_sqlite_session():
-    """Session SQLite en mémoire avec le schéma créé (tests / évaluation hors-ligne)."""
-    engine = create_engine("sqlite://", future=True)
+    """Session SQLite en mémoire avec le schéma créé (tests / évaluation hors-ligne).
+
+    `StaticPool` + `check_same_thread=False` : le runtime LangGraph exécute les
+    nœuds synchrones (dont les appels d'outils) dans un thread pool interne même
+    pour un `.invoke()` synchrone. Le pool par défaut de SQLite (un connexion par
+    thread) donnerait à chaque thread une base en mémoire distincte et vide.
+    """
+    engine = create_engine(
+        "sqlite://",
+        future=True,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, expire_on_commit=False, future=True)()

@@ -61,29 +61,37 @@ uv run pytest tests/ -k isolation
 ```
 
 Le coeur tourne **entièrement hors-ligne** : SQLite en mémoire pour les tests, `LocalKB` (TF-IDF local)
-pour la FAQ, `EchoLLM` pour le LLM. Les intégrations réelles (Postgres, Chroma, Azure AI Inference) ne
+pour la FAQ, `OfflineChatModel` pour le LLM. Les intégrations réelles (Postgres, Chroma, Azure AI Inference) ne
 s'activent que si les variables d'env correspondantes sont présentes (`DB_URL`, `CHROMA_URL`,
 `AZURE_AI_INFERENCE_ENDPOINT`) — voir `.env.example`. Ça veut dire qu'on peut développer/tester `memory`,
 `guardrails`, `mlops` sans docker compose ni credentials.
 
 ## Architecture
 
-### Pipeline de l'agent (`src/velmo/agent.py`)
+### Pipeline de l'agent (`src/velmo/agent.py` + `src/velmo/agent_graph.py`)
 
 ```
-message → guardrails.check_input → memory.read → routage/outils (ou LLM) → guardrails.check_output → memory.write → réponse
+message → guardrails.check_input → memory.read → graphe LangGraph (routage déterministe → nœud LLM outillé) → guardrails.check_output → memory.write → réponse
 ```
 
-`Agent.respond()` orchestre ce pipeline. `Agent._handle()` fait un **routage déterministe par regex**
-(numéro de commande `O-\d{4}-\d{4}`, mots-clés d'intention comme « annul », « rembours », « taille »,
-alias produits) vers les outils métier ; seul le cas générique retombe sur `self.llm.invoke(...)`.
+`Agent.respond()` orchestre ce pipeline et délègue le raisonnement à `agent_graph.answer(...)`.
+L'agent est un `StateGraph` LangGraph à deux nœuds (`src/velmo/agent_graph.py`) :
+- `deterministic_node` reprend la logique de `velmo.routing.run_deterministic` — **routage déterministe
+  par regex** (numéro de commande `O-\d{4}-\d{4}`, mots-clés d'intention comme « annul », « rembours »,
+  « taille », alias produits) — et appelle les outils métier directement, sans LLM.
+- si aucune intention n'est reconnue, le graphe route vers `llm_node` : un agent ReAct (`create_agent`
+  + `velmo.agent_tools.build_tools`) outillé avec les 10 outils métier fermés sur `session`/`user_id`/`kb`
+  (le LLM ne choisit jamais `user_id`, isolation garantie par fermeture).
+
 Les actions qui modifient une commande (annulation, adresse, taille, retour, remboursement) passent
-par `_confirm_or_act` : elles exigent une confirmation explicite du client (« je confirme », etc.)
-avant d'exécuter l'outil.
+par `_confirm_or_act` (dans `velmo.routing`) : elles exigent une confirmation explicite du client
+(« je confirme », etc.) avant d'exécuter l'outil — pour l'instant cette confirmation ne s'applique
+qu'au chemin déterministe (limite documentée dans
+`docs/superpowers/specs/2026-07-08-agent-langgraph-design.md`).
 
 `build_default_agent()` est le point d'assemblage prod (session Postgres réelle + `get_kb()` +
-`get_llm()`). `tests/conftest.py` fournit l'équivalent test (`build_reference_agent`,
-`build_degraded_agent` avec des SQLite seedées et `EchoLLM`/`LocalKB`).
+`get_chat_model()`). `tests/conftest.py` fournit l'équivalent test (`build_reference_agent`,
+`build_degraded_agent` avec des SQLite seedées et `OfflineChatModel`/`LocalKB`).
 
 ### Trois modules à construire, avec surface publique déjà figée
 
@@ -137,10 +145,11 @@ la même interface `search(query, k) -> list[dict]` avec `source`/`snippet`.
 
 ### LLM (`src/velmo/llm.py`)
 
-`get_llm()` retourne `AzureLLM` (Kimi-K2.6 via `langchain-azure-ai`, import différé) si
-`AZURE_AI_INFERENCE_ENDPOINT` est défini, sinon `EchoLLM` (accusé de réception déterministe). Le LLM
-n'est appelé qu'en dernier recours dans `Agent._handle` — la majorité des intentions métier sont
-routées sans LLM.
+`get_chat_model()` retourne un `AzureAIOpenAIApiChatModel` (Kimi-K2.6 via `langchain-azure-ai`, import
+différé) si `AZURE_AI_INFERENCE_ENDPOINT` est défini, sinon `OfflineChatModel` (accusé de réception
+déterministe, sans tool-calling). L'agent est un `StateGraph` (`velmo.agent_graph`) : le nœud
+déterministe (`velmo.routing`) route la majorité des intentions sans LLM, et ne bascule sur le nœud LLM
+outillé (`create_agent` + `build_tools`) que lorsqu'aucune règle ne matche.
 
 ### Tests (`tests/`)
 

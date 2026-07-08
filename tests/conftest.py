@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
 from velmo.agent import Agent
 from velmo.db import fresh_sqlite_session
 from velmo.guardrails import Decision, GuardrailEngine
 from velmo.kb_store import LocalKB
-from velmo.llm import EchoLLM
+from velmo.llm import OfflineChatModel
 from velmo.memory import MemoryManager
 from velmo.sampledata import seed
 
@@ -29,6 +31,18 @@ def seeded_session():
     return session
 
 
+class ScriptedToolCallingChatModel(FakeMessagesListChatModel):
+    """Fake chat model that accepts bind_tools (returns itself) so it can drive
+    `create_agent` with a scripted sequence of tool-calling messages.
+
+    `FakeMessagesListChatModel` alone raises NotImplementedError on bind_tools,
+    which `create_agent` calls internally.
+    """
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "ScriptedToolCallingChatModel":
+        return self
+
+
 class AllowAllGuardrails:
     """Garde-fous neutralisés (agent dégradé pour le test de régression)."""
 
@@ -44,7 +58,7 @@ class AllowAllGuardrails:
 
 def build_reference_agent() -> Agent:
     return Agent(
-        llm=EchoLLM(),
+        chat_model=OfflineChatModel(),
         memory=MemoryManager(),
         guardrails=GuardrailEngine(),
         session=seeded_session(),
@@ -54,7 +68,7 @@ def build_reference_agent() -> Agent:
 
 def build_degraded_agent() -> Agent:
     return Agent(
-        llm=EchoLLM(),
+        chat_model=OfflineChatModel(),
         memory=MemoryManager(),
         guardrails=AllowAllGuardrails(),
         session=seeded_session(),
