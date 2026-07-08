@@ -92,6 +92,54 @@ sequenceDiagram
     end
 ```
 
+## Vue simplifiée — implémentation actuelle
+
+Le schéma de séquence ci-dessus décrit la cible. Voici le flux réellement implémenté par
+`MemoryManager` (`src/velmo/memory/`), plus simple à lire. Deux écarts notables par rapport à un
+schéma « idéal » : la recherche de faits durables se scinde en deux mécanismes distincts (lecture
+exacte pour les faits sémantiques, recherche par similarité seulement pour les extraits
+épisodiques — cf. `docs/superpowers/specs/2026-07-06-agent-runtime-langgraph-design.md`), et
+l'extraction des faits transférés depuis la fenêtre courte n'est pas encore assurée par LangMem :
+les messages évincés sont stockés tels quels comme extraits épisodiques.
+
+```mermaid
+flowchart TD
+    MSG["💬 Message utilisateur"]
+
+    subgraph READ["🔍 Lecture mémoire"]
+        direction LR
+        HIST["🗄️ Checkpointer LangGraph<br>PostgresSaver (sync) / InMemorySaver hors-ligne<br>→ historique de la session<br>(mémoire court terme — R1)"]
+        PREF["🎯 ChromaDB.get()<br>where user_id = X AND fact_type = preference<br>→ TOUS les faits sémantiques<br>(lecture exacte, pas de similarité — R2/R3)"]
+        RAG["🔍 ChromaDB.query()<br>where user_id = X AND fact_type = episodic_excerpt<br>→ TOP_K extraits épisodiques pertinents<br>(similarité — R2/R3)"]
+    end
+
+    LLM["🤖 LLM (fallback libre uniquement)<br>─────────────────────<br>contexte = historique + faits sémantiques + extraits + message courant"]
+
+    RESP["💬 Réponse agent → utilisateur"]
+
+    subgraph WRITE["✍️ Écriture mémoire"]
+        direction TB
+        SAVE["🗄️ Checkpointer LangGraph<br>→ sauvegarde message + réponse<br>(court terme — R1)"]
+        CHECK{"Fenêtre > 30 messages ?<br>(R4)"}
+        EXCERPT["📦 Stockage brut de l'extrait<br>(pas d'extraction LangMem pour l'instant)"]
+        CHROMA["🗄️ ChromaDB.upsert()<br>metadata user_id, fact_type=episodic_excerpt<br>→ extrait indexé (long terme — R2/R3)"]
+        PURGE["🗑️ RemoveMessage<br>→ retrait du checkpoint (fenêtre courte)"]
+    end
+
+    FIN(["✅ Fin du tour"])
+
+    MSG --> READ
+    READ --> LLM
+    LLM --> RESP
+    RESP --> SAVE
+    SAVE --> CHECK
+    CHECK -- "Non" --> FIN
+    CHECK -- "Oui : messages les plus anciens évincés" --> EXCERPT
+    EXCERPT --> CHROMA
+    CHROMA --> PURGE
+    PURGE --> FIN
+```
+
 ## Scénarios utilisateur & tests d'acceptance *(obligatoire)*
 
 ### Scénario 1 — Retour d'un client entre deux sessions (Priorité : P1)
