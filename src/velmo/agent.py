@@ -46,8 +46,12 @@ class Agent:
 
         context = self.memory.read(user_id, message).render()
         answer = agent_graph.answer(
-            self.session, user_id, self.kb, message,
-            context=context, chat_model=self.chat_model,
+            self.session,
+            user_id,
+            self.kb,
+            message,
+            context=context,
+            chat_model=self.chat_model,
         )
 
         gate_out = self.guardrails.check_output(answer)
