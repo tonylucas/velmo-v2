@@ -10,6 +10,7 @@ import os
 import re
 import unicodedata
 from pathlib import Path
+from urllib.parse import urlparse
 
 KB_DOCS_DIR = Path(__file__).resolve().parents[2] / "kb" / "docs"
 
@@ -83,7 +84,8 @@ def get_kb():
     except ImportError:
         return LocalKB()
 
-    client = chromadb.HttpClient(host="chroma", port=8000)
+    parsed = urlparse(os.environ["CHROMA_URL"])
+    client = chromadb.HttpClient(host=parsed.hostname or "localhost", port=parsed.port or 8000)
     embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
     )
