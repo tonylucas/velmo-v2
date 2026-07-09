@@ -15,9 +15,14 @@ from __future__ import annotations
 from langchain_core.tools import BaseTool, tool
 
 from . import tools
+from .tools.memory_tools import (
+    forget_user_data as _forget_user_data,
+    inspect_user_memory as _inspect_user_memory,
+    remember_fact as _remember_fact,
+)
 
 
-def build_tools(session, user_id: str, kb) -> list[BaseTool]:
+def build_tools(session, user_id: str, kb, store=None) -> list[BaseTool]:
     """Build the per-request toolset bound to one authenticated customer."""
 
     @tool
@@ -123,7 +128,7 @@ def build_tools(session, user_id: str, kb) -> list[BaseTool]:
         """
         return tools.escalate_to_human(session, user_id, reason, order_id)
 
-    return [
+    business_tools = [
         get_order,
         track_shipment,
         check_stock,
@@ -135,3 +140,33 @@ def build_tools(session, user_id: str, kb) -> list[BaseTool]:
         trigger_refund,
         escalate_to_human,
     ]
+
+    if store is None:
+        return business_tools
+
+    @tool
+    def remember_fact(fact_type: str, key: str, content: str) -> dict:
+        """Mémorise un fait durable sur le client (préférence, profil, commande).
+
+        Args:
+            fact_type: Un de preference, profile, order_info, dispute.
+            key: Attribut concerné (ex. pointure, tutoiement, order).
+            content: Valeur à retenir.
+        """
+        return _remember_fact(store, user_id, fact_type, key, content)
+
+    @tool
+    def forget_user_data(target: str | None = None) -> dict:
+        """Oublie une information du client (ou toutes si target est vide).
+
+        Args:
+            target: Mot-clé de l'information à oublier ; vide = tout oublier.
+        """
+        return _forget_user_data(store, user_id, target)
+
+    @tool
+    def inspect_user_memory() -> str:
+        """Résume ce que l'agent a retenu sur le client (traçabilité)."""
+        return _inspect_user_memory(store, user_id)
+
+    return business_tools + [remember_fact, forget_user_data, inspect_user_memory]

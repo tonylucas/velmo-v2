@@ -6,7 +6,11 @@ from conftest import ScriptedToolCallingChatModel, seeded_session
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from velmo.agent_graph import answer, build_graph, get_state, window_messages
+from velmo import agent_graph
+from velmo.agent_graph import answer, build_graph, get_state, select_memory, window_messages
+from velmo.llm import OfflineChatModel
+from velmo.memory.fact_store import LocalFactStore
+from velmo.tools.memory_tools import remember_fact
 
 
 def test_deterministic_path_never_calls_llm():
@@ -151,3 +155,33 @@ def test_llm_input_is_windowed_but_state_keeps_all():
     # The LLM never receives more than the window; the checkpointer keeps everything.
     assert max(seen) <= 30
     assert len(get_state(ck, user)) > 30
+
+
+def test_answer_runs_with_store_wired():
+    # R2 retrieval seam: answer accepts a store and completes a turn.
+    store = LocalFactStore()
+    remember_fact(store, "u1", "profile", "pointure", "L")
+    reply = agent_graph.answer(
+        None, "u1", None, "Bonjour",
+        chat_model=OfflineChatModel(), store=store,
+    )
+    assert isinstance(reply, str) and reply
+
+
+def test_select_memory_keeps_semantic_facts_despite_episodic_volume():
+    # R2: durable semantic traits recorded early must survive a later burst of
+    # episodic facts. A single recency-ordered top-k search would evict the
+    # older semantic facts; select_memory runs two separate searches so they
+    # are always retained.
+    store = LocalFactStore()
+    user = "u-evict"
+    # Semantic traits recorded first (oldest entries).
+    remember_fact(store, user, "preference", "tutoiement", "oui")
+    remember_fact(store, user, "profile", "pointure", "L")
+    # Later burst of more-recent episodic facts.
+    for i in range(6):
+        remember_fact(store, user, "order_info", "order", f"O-2024-010{i}")
+
+    keys = {f.key for f in select_memory(store, user, "peu importe")}
+    assert "tutoiement" in keys
+    assert "pointure" in keys

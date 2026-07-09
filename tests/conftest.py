@@ -14,6 +14,7 @@ from velmo.db import fresh_sqlite_session
 from velmo.guardrails import Decision, GuardrailEngine
 from velmo.kb_store import LocalKB
 from velmo.llm import OfflineChatModel
+from velmo.memory.fact_store import LocalFactStore
 from velmo.sampledata import seed
 
 EVAL_DIR = Path(__file__).resolve().parent.parent / "eval"
@@ -55,21 +56,23 @@ class AllowAllGuardrails:
         return Decision(allowed=True, action="allow")
 
 
-def build_reference_agent() -> Agent:
+def build_reference_agent(store=None) -> Agent:
     return Agent(
         chat_model=OfflineChatModel(),
         guardrails=GuardrailEngine(),
         session=seeded_session(),
         kb=LocalKB(),
+        store=store if store is not None else LocalFactStore(),
     )
 
 
-def build_degraded_agent() -> Agent:
+def build_degraded_agent(store=None) -> Agent:
     return Agent(
         chat_model=OfflineChatModel(),
         guardrails=AllowAllGuardrails(),
         session=seeded_session(),
         kb=LocalKB(),
+        store=store if store is not None else LocalFactStore(),
     )
 
 
