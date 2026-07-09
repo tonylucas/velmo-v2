@@ -206,6 +206,19 @@ repris au chantier suivant.
 - **Message bloqué par un garde-fou d'entrée** : le graphe n'est pas invoqué,
   donc le message n'entre pas dans l'historique du checkpointer. Comportement
   acceptable, voire souhaitable (on ne mémorise pas une requête refusée).
+- **Fenêtre glissante et paires tool_call/tool_response** : `window_messages`
+  découpe par simple comptage (`messages[-30:]`), sans connaître la structure
+  des tours. Sur une conversation longue et riche en appels d'outils, la
+  coupe des 30 messages peut théoriquement tomber entre un `AIMessage(tool_calls=…)`
+  et son `ToolMessage`, laissant un `ToolMessage` orphelin en tête de fenêtre —
+  la plupart des API de chat (dont celle utilisée en prod) rejettent une telle
+  séquence. **Limite assumée pour 002** : le nœud déterministe absorbe la
+  majorité des actions de commande (peu d'appels d'outils dans l'historique
+  LLM), et `OfflineChatModel` ne fait pas de tool calling — le risque n'est
+  donc pas exercé hors-ligne. À surveiller en prod avec le vrai modèle
+  outillé ; un découpage par paires complètes serait le correctif si le cas
+  se manifeste réellement (même traitement que la limite de confirmation
+  mono-tour documentée au chantier 001).
 - **`create_agent` (ReAct interne) et le checkpointer** : le checkpointer est
   branché sur le **graphe externe** (source de vérité de l'historique). Le nœud
   `llm_node` invoque l'agent ReAct avec une **vue tronquée** (30 derniers
