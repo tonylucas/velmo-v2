@@ -28,10 +28,10 @@
 
 | Fichier | Responsabilité | Action |
 |---|---|---|
-| `src/velmo/checkpointer.py` | Factory `get_checkpointer()` : backend mémoire court terme (InMemory / Postgres) | **Créer** |
+| `src/velmo/memory/checkpointer.py` | Factory `get_checkpointer()` : backend mémoire court terme (InMemory / Postgres) | **Créer** |
 | `src/velmo/agent_graph.py` | Graphe : branchement du checkpointer, soft window sur l'entrée LLM, lecture d'état `get_state` | **Modifier** |
 | `src/velmo/agent.py` | `Agent` sans `MemoryManager` : détient un checkpointer, `respond` passe `thread_id`, expose `get_state` | **Modifier** |
-| `src/velmo/memory/` | (supprimé — plus de gestionnaire de mémoire maison) | **Supprimer** |
+| `src/velmo/memory/__init__.py` | Vidé de `MemoryManager`/`MemoryContext` : devient le docstring du pilier mémoire (le package reste, foyer du long terme en 003) | **Modifier** |
 | `tests/test_checkpointer.py` | Tests de la factory | **Créer** |
 | `tests/test_agent_graph.py` | Tests persistance / isolation / soft window (ajouts) | **Modifier** |
 | `tests/test_agent.py` | Tests niveau `Agent` : rétention, isolation, `get_state` | **Créer** |
@@ -43,7 +43,7 @@
 ## Task 1: Checkpointer factory
 
 **Files:**
-- Create: `src/velmo/checkpointer.py`
+- Create: `src/velmo/memory/checkpointer.py`
 - Test: `tests/test_checkpointer.py`
 
 **Interfaces:**
@@ -61,7 +61,7 @@ from __future__ import annotations
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-from velmo.checkpointer import get_checkpointer
+from velmo.memory.checkpointer import get_checkpointer
 
 
 def test_offline_returns_in_memory_saver(monkeypatch):
@@ -78,11 +78,11 @@ def test_each_call_returns_a_fresh_saver(monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `uv run pytest tests/test_checkpointer.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'velmo.checkpointer'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'velmo.memory.checkpointer'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `src/velmo/checkpointer.py`:
+Create `src/velmo/memory/checkpointer.py`:
 
 ```python
 """Checkpointer factory: the LangGraph short-term memory backend.
@@ -129,7 +129,7 @@ Expected: PASS (2 passed).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/velmo/checkpointer.py tests/test_checkpointer.py
+git add src/velmo/memory/checkpointer.py tests/test_checkpointer.py
 git commit -m "feat: add get_checkpointer factory (InMemorySaver offline)"
 ```
 
@@ -523,8 +523,8 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from . import agent_graph
-from .checkpointer import get_checkpointer
 from .guardrails import GuardrailEngine
+from .memory.checkpointer import get_checkpointer
 
 DEFAULT_REFUSAL = (
     "Désolé, je ne peux pas traiter cette demande. Je reste à votre disposition "
@@ -638,12 +638,12 @@ git commit -m "feat: back Agent short-term memory with the checkpointer, drop me
 
 **Files:**
 - Modify: `tests/acceptance/test_memory.py`
-- Delete: `src/velmo/memory/` (directory and `__init__.py`)
+- Modify: `src/velmo/memory/__init__.py` (retire `MemoryManager`/`MemoryContext`, garde le package)
 - Modify: `CLAUDE.md`
 
 **Interfaces:**
 - Consumes: `build_reference_agent` (conftest), `Agent.respond`, `Agent.get_state` (Task 4).
-- Produces: acceptance suite alignée sur le périmètre 002.
+- Produces: acceptance suite alignée sur le périmètre 002 ; le package `memory/` reste le foyer du pilier mémoire (`checkpointer.py` présent, long terme à venir en 003).
 
 - [ ] **Step 1: Rewrite the acceptance test file**
 
@@ -697,16 +697,24 @@ def test_right_to_be_forgotten():
 Run: `uv run pytest tests/acceptance/test_memory.py -v`
 Expected: `test_recall_over_30_messages` PASS ; the three others SKIPPED. 0 failed.
 
-- [ ] **Step 3: Delete the MemoryManager module**
+- [ ] **Step 3: Remove MemoryManager from the memory package (keep the package)**
 
-```bash
-git rm -r src/velmo/memory
+Replace the whole `src/velmo/memory/__init__.py` with a package docstring only (the `MemoryManager` and `MemoryContext` classes are dropped; `checkpointer.py` stays in this package):
+
+```python
+"""Mémoire de l'agent Velmo — pilier mémoire du projet.
+
+La mémoire **court terme** (fil de conversation, fenêtre glissante) est le
+checkpointer LangGraph — voir `velmo.memory.checkpointer`. La mémoire **long
+terme** (faits durables, épisodique Chroma, droit à l'oubli) sera ajoutée dans ce
+package au chantier 003. Il n'y a plus de gestionnaire de mémoire maison.
+"""
 ```
 
-- [ ] **Step 4: Verify nothing imports the deleted module**
+- [ ] **Step 4: Verify MemoryManager is gone and the suite is clean**
 
-Run: `grep -rn "velmo.memory\|MemoryManager\|import memory" src/ tests/`
-Expected: no output (no remaining reference).
+Run: `grep -rn "MemoryManager\|MemoryContext" src/ tests/`
+Expected: no output (the bespoke store is fully removed). The `velmo.memory.checkpointer` import remains and is expected.
 
 Run: `uv run pytest tests/ -q`
 Expected: failures reduced to the remaining red stubs only — `tests/acceptance/test_guardrails.py` (5) and `tests/acceptance/test_mlops.py` (3). `tests/acceptance/test_memory.py` now passes (1 passed, 3 skipped). No import errors.
@@ -730,7 +738,7 @@ message → guardrails.check_input → graphe LangGraph (mémoire court terme vi
 **Edit B** — add one sentence about short-term memory right after the paragraph ending `build_degraded_agent avec des SQLite seedées et OfflineChatModel/LocalKB).` Insert this paragraph:
 
 ```
-La **mémoire court terme** est le checkpointer LangGraph (`velmo.checkpointer.get_checkpointer` :
+La **mémoire court terme** est le checkpointer LangGraph (`velmo.memory.checkpointer.get_checkpointer` :
 `InMemorySaver` hors-ligne, `PostgresSaver` si `DB_URL`), compilé dans le graphe et keyé par
 `thread_id = user_id`. `Agent.respond` n'invoque qu'avec le nouveau message ; le runtime charge et
 persiste l'historique. Une **soft window** (`agent_graph.window_messages`, 30 messages) borne le prompt
@@ -761,8 +769,7 @@ with:
 - [ ] **Step 6: Commit**
 
 ```bash
-git add tests/acceptance/test_memory.py CLAUDE.md
-git rm -r --cached src/velmo/memory 2>/dev/null || true
+git add tests/acceptance/test_memory.py src/velmo/memory/__init__.py CLAUDE.md
 git commit -m "feat: short-term memory acceptance via agent + checkpointer, remove MemoryManager"
 ```
 

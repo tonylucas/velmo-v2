@@ -16,9 +16,11 @@ version précédente tenait « avec de la ficelle » (audit `docs/reco_expert.md
 on repart sur les primitives natives de LangGraph. La mémoire court terme, c'est
 le **checkpointer** — écrit par le runtime du graphe, jamais poké à la main.
 
-Conséquence directe : la classe stub `MemoryManager` (`src/velmo/memory/`) est
-**supprimée**. Elle n'était consommée que par la suite d'acceptance et l'agent ;
-les deux sont réoutillés pour parler au checkpointer.
+Conséquence directe : la classe stub `MemoryManager` (dans `src/velmo/memory/`)
+est **supprimée**. Elle n'était consommée que par la suite d'acceptance et
+l'agent ; les deux sont réoutillés pour parler au checkpointer. **Le package
+`memory/` reste** : c'est le foyer du pilier mémoire — le checkpointer court
+terme y vit (`memory/checkpointer.py`) et le long terme l'y rejoindra en 003.
 
 ## 2. Modèle mémoire (LangGraph canonique)
 
@@ -174,14 +176,15 @@ repris au chantier suivant.
 
 ## 6. Fichiers touchés (indicatif)
 
-- `src/velmo/checkpointer.py` — **créé** : `get_checkpointer()`.
+- `src/velmo/memory/checkpointer.py` — **créé** : `get_checkpointer()`.
 - `src/velmo/agent_graph.py` — **modifié** : param checkpointer sur
   `build_graph`, fenêtre glissante (`trim_messages` / `pre_model_hook`) dans
   `llm_node`, `thread_id` dans `answer`, helper `get_state`.
 - `src/velmo/agent.py` — **modifié** : suppression du paramètre `memory` et des
   appels `memory.read/write` ; `respond` passe le `config` thread ; ajout
   `get_state`.
-- `src/velmo/memory/` — **supprimé**.
+- `src/velmo/memory/__init__.py` — **modifié** : `MemoryManager`/`MemoryContext`
+  retirés, package conservé (foyer du pilier mémoire).
 - `tests/conftest.py` — **modifié** : fixtures agents sans `MemoryManager`,
   checkpointer branché.
 - `tests/acceptance/test_memory.py` — **modifié** : recall réécrit (vert) ;
