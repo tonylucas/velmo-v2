@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from conftest import seeded_session
 
+from velmo.memory.fact_store import LocalFactStore
 from velmo.routing import run_deterministic
+from velmo.tools.memory_tools import remember_fact
 
 
 def test_order_status_is_recognised():
@@ -40,10 +42,6 @@ def test_isolation_other_customer_order():
     )
     assert reply is not None
     assert "Je ne trouve pas" in reply
-
-
-from velmo.memory.fact_store import LocalFactStore
-from velmo.tools.memory_tools import remember_fact
 
 
 def _store_with_address():
