@@ -49,6 +49,34 @@ Velmo : D'après notre FAQ (frais-de-port.md) : France métropolitaine : 6,90 �
 À ce stade l'agent sait parler à la base et à la FAQ, **mais sans mémoire durable,
 sans garde-fous de contenu et sans chaîne qualité** — c'est ce qui reste à construire.
 
+## Graphe de l'agent
+
+`src/velmo/agent_graph.py` assemble l'agent comme un `StateGraph` LangGraph à
+deux nœuds, compilé avec un checkpointer (mémoire court terme, thread_id =
+`user_id`) qui charge/persiste l'historique à chaque tour :
+
+```mermaid
+flowchart TD
+    start([message utilisateur]) --> det["deterministic_node<br/>routage regex (velmo.routing)<br/>appelle les outils métier, sans LLM"]
+    det -- intention reconnue --> fin([fin])
+    det -- rien ne matche --> llm["llm_node<br/>agent ReAct (create_agent)<br/>outillé, fenêtre glissante 30 messages"]
+    llm --> fin
+
+    cp[("checkpointer<br/>historique complet par thread_id")]
+    cp -. charge / persiste .- det
+    cp -. charge / persiste .- llm
+```
+
+- **`deterministic_node`** : chemin rapide par expressions régulières (numéro
+  de commande, mots-clés d'intention). S'il produit une réponse, le graphe
+  s'arrête directement (`route` renvoie `END`).
+- **`llm_node`** : atteint uniquement si aucune règle ne matche. Agent ReAct
+  outillé avec les 10 outils métier, dont le prompt est borné aux 30 derniers
+  messages (`window_messages`) — la persistance, elle, garde tout l'historique.
+- Le **checkpointer** (`InMemorySaver` hors-ligne, `PostgresSaver` si `DB_URL`)
+  n'est pas un nœud du graphe : c'est l'état compilé (`graph.compile(checkpointer=...)`),
+  lu et écrit automatiquement à chaque `graph.invoke`, keyé par `thread_id`.
+
 ## Layout
 
 ```
