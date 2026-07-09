@@ -26,6 +26,14 @@ class FactStore(Protocol):
     def delete(self, user_id: str, target: str | None = None) -> int: ...
 
 
+def semantic_storage_key(fact: Fact) -> str:
+    return f"{fact.user_id}:{fact.fact_type}:{fact.key}"
+
+
+def episodic_storage_key(fact: Fact) -> str:
+    return f"{fact.user_id}:{fact.fact_type}:{fact.key}:{uuid4().hex}"
+
+
 def _matches(fact: Fact, needle: str | None) -> bool:
     return needle is None or needle in fact.key.lower() or needle in fact.content.lower()
 
@@ -39,12 +47,12 @@ class LocalFactStore:
     def write(self, fact: Fact) -> Fact:
         bucket = self._by_user.setdefault(fact.user_id, {})
         if is_semantic(fact.fact_type):
-            storage_key = f"{fact.fact_type}:{fact.key}"
+            storage_key = semantic_storage_key(fact)
             existing = bucket.get(storage_key)
             if existing is not None:
                 fact = fact.model_copy(update={"created_at": existing.created_at})
         else:
-            storage_key = f"{fact.fact_type}:{fact.key}:{uuid4().hex}"
+            storage_key = episodic_storage_key(fact)
         bucket[storage_key] = fact
         return fact
 
@@ -83,7 +91,7 @@ class ChromaFactStore:
 
     def write(self, fact: Fact) -> Fact:
         if is_semantic(fact.fact_type):
-            storage_key = f"{fact.fact_type}:{fact.key}"
+            storage_key = semantic_storage_key(fact)
             existing = self._collection.get(ids=[storage_key])
             metas = existing.get("metadatas") or []
             if metas:
@@ -91,7 +99,7 @@ class ChromaFactStore:
                     update={"created_at": metas[0].get("created_at", fact.created_at)}
                 )
         else:
-            storage_key = f"{fact.fact_type}:{fact.key}:{uuid4().hex}"
+            storage_key = episodic_storage_key(fact)
         self._collection.upsert(
             ids=[storage_key], documents=[fact.content], metadatas=[fact.model_dump()]
         )

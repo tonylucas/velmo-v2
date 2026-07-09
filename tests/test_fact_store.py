@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from velmo.memory.facts import Fact
-from velmo.memory.fact_store import LocalFactStore, get_fact_store
+from velmo.memory.fact_store import LocalFactStore, get_fact_store, semantic_storage_key
 
 
 def _write(store, user_id, fact_type, key, content):
@@ -95,3 +95,13 @@ def test_delete_unknown_target_removes_nothing():
 def test_get_fact_store_offline_returns_local(monkeypatch):
     monkeypatch.delenv("CHROMA_URL", raising=False)
     assert isinstance(get_fact_store(), LocalFactStore)
+
+
+def test_semantic_storage_key_is_namespaced_by_user():
+    # R3/Fix A: two users' identical (fact_type, key) must never collide on the
+    # Chroma document id, since ChromaFactStore keys a single shared collection.
+    key_a = semantic_storage_key(Fact.new("A", "profile", "pointure", "L"))
+    key_b = semantic_storage_key(Fact.new("B", "profile", "pointure", "L"))
+    assert key_a.startswith("A:")
+    assert key_b.startswith("B:")
+    assert key_a != key_b
