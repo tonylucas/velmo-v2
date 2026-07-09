@@ -31,6 +31,18 @@ class AgentState(TypedDict):
     matched: bool
 
 
+WINDOW_SIZE = 30
+
+
+def window_messages(messages: list[BaseMessage], limit: int = WINDOW_SIZE) -> list[BaseMessage]:
+    """Return at most the last `limit` messages — the sliding window fed to the LLM.
+
+    The persisted state is never trimmed (soft window): the checkpointer keeps
+    the full history; only the model's working context is bounded here.
+    """
+    return messages[-limit:]
+
+
 def build_graph(
     session,
     user_id: str,
@@ -61,7 +73,8 @@ def build_graph(
     )
 
     def llm_node(state: AgentState) -> dict:
-        result = react.invoke({"messages": state["messages"]})
+        windowed = window_messages(state["messages"])
+        result = react.invoke({"messages": windowed})
         return {"messages": result["messages"]}
 
     graph = StateGraph(AgentState)

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from conftest import ScriptedToolCallingChatModel, seeded_session
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
-from velmo.agent_graph import answer, build_graph, get_state
+from velmo.agent_graph import answer, build_graph, get_state, window_messages
 
 
 def test_deterministic_path_never_calls_llm():
@@ -111,3 +111,43 @@ def test_threads_are_isolated_by_user():
 
 def test_get_state_empty_thread_returns_empty():
     assert get_state(InMemorySaver(), "nobody") == []
+
+
+def test_window_messages_keeps_last_n():
+    msgs = [HumanMessage(content=str(i)) for i in range(50)]
+    windowed = window_messages(msgs, 30)
+    assert len(windowed) == 30
+    assert windowed[0].content == "20"
+    assert windowed[-1].content == "49"
+
+
+def test_window_messages_shorter_than_limit_unchanged():
+    msgs = [HumanMessage(content=str(i)) for i in range(5)]
+    assert window_messages(msgs, 30) == msgs
+
+
+def test_llm_input_is_windowed_but_state_keeps_all():
+    session = seeded_session()
+    ck = InMemorySaver()
+    seen: list[int] = []
+
+    class Recorder(ScriptedToolCallingChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            seen.append(sum(1 for m in messages if not isinstance(m, SystemMessage)))
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    model = Recorder(responses=[AIMessage(content="ok")])
+    user = "C-marc-dubois"
+    for i in range(40):
+        answer(
+            session,
+            user,
+            None,
+            f"Message numero {i} sans intention.",
+            chat_model=model,
+            checkpointer=ck,
+            thread_id=user,
+        )
+    # The LLM never receives more than the window; the checkpointer keeps everything.
+    assert max(seen) <= 30
+    assert len(get_state(ck, user)) > 30
