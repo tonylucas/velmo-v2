@@ -50,12 +50,13 @@ def build_graph(
     chat_model: BaseChatModel,
     context: str = "",
     checkpointer: BaseCheckpointSaver | None = None,
+    store=None,
 ):
     """Compile the two-node agent graph bound to one request."""
 
     def deterministic_node(state: AgentState) -> dict:
         message = state["messages"][-1].content
-        reply = run_deterministic(session, user_id, kb, message)
+        reply = run_deterministic(session, user_id, kb, message, store)
         if reply is None:
             return {"matched": False}
         return {"messages": [AIMessage(content=reply)], "matched": True}
@@ -68,7 +69,7 @@ def build_graph(
         system_prompt = f"{SYSTEM_PROMPT}\n\nMémoire:\n{context}"
     react = create_agent(
         model=chat_model,
-        tools=build_tools(session, user_id, kb),
+        tools=build_tools(session, user_id, kb, store),
         system_prompt=system_prompt,
     )
 
@@ -95,11 +96,18 @@ def answer(
     chat_model: BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     thread_id: str | None = None,
+    store=None,
 ) -> str:
     """Run one turn through the agent graph and return the final reply text."""
     if chat_model is None:
         chat_model = get_chat_model()
-    graph = build_graph(session, user_id, kb, chat_model, context, checkpointer)
+    if store is not None:
+        from .memory.facts import render_facts
+
+        memory = render_facts(store.search(user_id, message))
+        if memory:
+            context = f"{memory}\n{context}".rstrip() if context else memory
+    graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store)
     config = {"configurable": {"thread_id": thread_id}} if checkpointer is not None else None
     result = graph.invoke(
         {"messages": [HumanMessage(content=message)], "matched": False},

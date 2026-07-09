@@ -14,6 +14,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from . import agent_graph
 from .guardrails import GuardrailEngine
 from .memory.checkpointer import get_checkpointer
+from .memory.fact_store import get_fact_store
 
 DEFAULT_REFUSAL = (
     "Désolé, je ne peux pas traiter cette demande. Je reste à votre disposition "
@@ -31,12 +32,14 @@ class Agent:
         session=None,
         kb=None,
         checkpointer: BaseCheckpointSaver | None = None,
+        store=None,
     ) -> None:
         self.chat_model = chat_model
         self.guardrails = guardrails
         self.session = session
         self.kb = kb
         self.checkpointer: BaseCheckpointSaver = checkpointer or get_checkpointer()
+        self.store = store if store is not None else get_fact_store()
 
     def respond(self, user_id: str, message: str) -> str:
         gate_in = self.guardrails.check_input(message)
@@ -51,6 +54,7 @@ class Agent:
             chat_model=self.chat_model,
             checkpointer=self.checkpointer,
             thread_id=user_id,
+            store=self.store,
         )
 
         gate_out = self.guardrails.check_output(answer)
@@ -61,6 +65,10 @@ class Agent:
     def get_state(self, user_id: str):
         """Return the conversation messages retained for a user (traceability)."""
         return agent_graph.get_state(self.checkpointer, user_id)
+
+    def inspect_memory(self, user_id: str):
+        """Return the durable facts retained for a user (R6 traceability)."""
+        return self.store.all(user_id)
 
 
 def build_default_agent(session=None, kb=None) -> Agent:
