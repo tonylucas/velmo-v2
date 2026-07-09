@@ -56,7 +56,7 @@ make eval          # uv run python -m velmo.mlops.score (à construire)
 Tests ciblés :
 ```bash
 uv run pytest tests/acceptance/test_memory.py -v
-uv run pytest tests/acceptance/test_memory.py::test_recall_over_30_turns -v
+uv run pytest tests/acceptance/test_memory.py::test_recall_over_30_messages -v
 uv run pytest tests/ -k isolation
 ```
 
@@ -71,7 +71,7 @@ s'activent que si les variables d'env correspondantes sont présentes (`DB_URL`,
 ### Pipeline de l'agent (`src/velmo/agent.py` + `src/velmo/agent_graph.py`)
 
 ```
-message → guardrails.check_input → memory.read → graphe LangGraph (routage déterministe → nœud LLM outillé) → guardrails.check_output → memory.write → réponse
+message → guardrails.check_input → graphe LangGraph (mémoire court terme via checkpointer ; routage déterministe → nœud LLM outillé) → guardrails.check_output → réponse
 ```
 
 `Agent.respond()` orchestre ce pipeline et délègue le raisonnement à `agent_graph.answer(...)`.
@@ -93,13 +93,20 @@ qu'au chemin déterministe (limite documentée dans
 `get_chat_model()`). `tests/conftest.py` fournit l'équivalent test (`build_reference_agent`,
 `build_degraded_agent` avec des SQLite seedées et `OfflineChatModel`/`LocalKB`).
 
+La **mémoire court terme** est le checkpointer LangGraph (`velmo.memory.checkpointer.get_checkpointer` :
+`InMemorySaver` hors-ligne, `PostgresSaver` si `DB_URL`), compilé dans le graphe et keyé par
+`thread_id = user_id`. `Agent.respond` n'invoque qu'avec le nouveau message ; le runtime charge et
+persiste l'historique. Une **soft window** (`agent_graph.window_messages`, 30 messages) borne le prompt
+LLM sans élaguer le state (`Agent.get_state(user_id)` restitue l'historique complet). Il n'y a plus de
+`MemoryManager` maison.
+
 ### Trois modules à construire, avec surface publique déjà figée
 
-- **`memory/`** (`MemoryManager`) : `read(user_id, message) -> MemoryContext`,
-  `write(user_id, user_msg, assistant_msg)`, `remember_fact`, `forget`, `inspect`. Doit satisfaire R1-R6
-  du brief (30 tours, persistance cross-session, isolation stricte par `user_id`, résumé au-delà de 30
-  messages, droit à l'oubli vérifiable, traçabilité). La reco stack impose Chroma pour l'épisodique long
-  terme ; le sémantique (faits durables) reste à concevoir (clé-valeur ? faits typés ?).
+- **Mémoire long terme (chantier 003, à construire)** : Store LangGraph (`BaseStore`) namespacé par
+  `user_id` pour les faits durables (R2/R3), droit à l'oubli (R5) et inspection (R6), plus l'épisodique
+  Chroma pour R4 « résumer/sélectionner sans perte ». La mémoire **court terme** (R1 + fenêtre glissante)
+  est faite : c'est le checkpointer (voir le pipeline ci-dessus). L'ancien `MemoryManager` maison a été
+  supprimé au chantier 002.
 - **`guardrails/`** (`GuardrailEngine`) : `check_input(message) -> Decision`,
   `check_output(text) -> Decision`, journalisation via `self.events`. Catégories dans `CATEGORIES`
   (hate, violence, sexual, pii, out_of_scope, prompt_injection, secret_leak). Les tests
