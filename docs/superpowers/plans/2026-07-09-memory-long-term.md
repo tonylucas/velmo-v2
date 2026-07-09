@@ -2,149 +2,88 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Doter l'agent d'une mémoire long terme (faits durables isolés par utilisateur, droit à l'oubli, inspection) via le Store LangGraph, testable entièrement hors-ligne.
+**Goal:** Doter l'agent d'une mémoire long terme (faits durables isolés par utilisateur, droit à l'oubli, inspection) via un `FactStore` sur le patron `kb_store`, testable entièrement hors-ligne.
 
-**Architecture:** Le Store LangGraph (`BaseStore`) est le jumeau du checkpointer : `InMemoryStore` hors-ligne, backend Postgres en prod (seam), namespace `(user_id,)` pour l'isolation R3. Les faits (`Fact` pydantic) portent un `fact_type` (sémantique vs épisodique) qui pilote la règle de conflit FR-009. Trois outils (`remember_fact`, `forget_user_data`, `inspect_user_memory`) et une recherche par tour injectée dans le `context` déjà existant de `agent_graph.answer` couvrent R2/R5/R6 ; les intentions d'oubli/inspection sont routées dans le nœud déterministe (FR-010, testable sans LLM).
+**Architecture:** Un `FactStore` maison à deux backends, calqué sur `LocalKB`/`ChromaKB` : `LocalFactStore` (dict par `user_id`, hors-ligne) et `ChromaFactStore` (collection Chroma `velmo_memory`, prod), choisis par `get_fact_store()` selon `CHROMA_URL`. Les faits (`Fact` pydantic) portent un `fact_type` (sémantique vs épisodique) pilotant la règle de conflit FR-009. Trois outils (`remember_fact`, `forget_user_data`, `inspect_user_memory`) et une recherche par tour injectée dans le `context` déjà existant de `agent_graph.answer` couvrent R2/R5/R6 ; les intentions d'oubli/inspection sont routées dans le nœud déterministe (FR-010, testable sans LLM).
 
-**Tech Stack:** Python 3.11, `uv`, pydantic v2, LangGraph (`langgraph.store`), pytest. Pas de nouvelle dépendance.
+**Tech Stack:** Python 3.11, `uv`, pydantic v2, pytest. Backend prod = Chroma (extra `vector`, déjà présent). Pas de nouvelle dépendance.
 
 ## Global Constraints
 
 - Gestionnaire de paquets : `uv` (`uv run pytest …`). Pas de mypy — la vérification est **pytest uniquement**.
 - Tout le code (identifiants, docstrings, commentaires, messages de commit) est **en anglais**. Seuls les textes destinés au client final (réponses de l'agent, gabarits de confirmation) sont en français.
-- Le cœur tourne **hors-ligne** : `InMemoryStore` en test/dev, aucun Docker/Chroma/Postgres requis pour la suite.
-- **Isolation R3** : toute lecture/écriture passe par le namespace `(user_id,)`. Un outil ne choisit jamais `user_id` (fermeture, comme les outils métier existants).
+- Le cœur tourne **hors-ligne** : `LocalFactStore` en test/dev, aucun Docker/Chroma/Postgres requis pour la suite.
+- **Patron `kb_store`** : `FactStore` = interface (`write`/`search`/`all`/`delete`) ; `LocalFactStore` (offline) / `ChromaFactStore` (prod, collection `velmo_memory`) ; `get_fact_store()` choisit selon `CHROMA_URL` — exactement comme `get_kb()`. La FAQ (`kb_store`, collection `velmo_faq`) n'est **pas touchée**.
+- **Isolation R3** : hors-ligne structurelle (un dict distinct par `user_id`) ; en prod par filtre `where={"user_id": …}` **centralisé dans `ChromaFactStore`**. Un outil ne choisit jamais `user_id` (fermeture).
 - **`fact_type`** ∈ {`preference`, `profile`} (sémantique) ∪ {`order_info`, `dispute`} (épisodique).
-- **FR-009** : conflit sémantique de même `(fact_type, key)` → **remplace** (garde le plus récent) ; épisodique → **ajoute** (jamais écrasé).
+- **`Fact`** porte un champ `key` (l'attribut) : le remplacement FR-009 se fait sur `(fact_type, key)`, pas sur `fact_type` seul (un user a plusieurs préférences distinctes).
+- **FR-009** : conflit sémantique de même `(fact_type, key)` → **remplace** (garde le plus récent, préserve `created_at`) ; épisodique → **ajoute** (jamais écrasé).
 - **FR-010** : la confirmation avant un oubli est un **gabarit déterministe**, jamais générée par le LLM.
-- Périmètre : l'extraction automatique par LLM (LangMem), l'ingestion « sans perte » de l'excédent (R4) et l'async sont **différés** (voir la spec §7). L'interface `Extractor` + une impl déterministe sont posées ici.
-- Backend de prod du Store : **Postgres** (même DB que le checkpointer), via import paresseux avec repli `InMemoryStore` — refinement assumé de la spec (qui disait « Chroma ») car LangGraph n'a pas de `BaseStore` Chroma natif ; Chroma reste le backend FAQ et le futur backend épisodique R4.
+- Périmètre : l'extraction automatique par LLM (LangMem), l'ingestion « sans perte » de l'excédent (R4) et l'async sont **différés** (spec §7). L'interface `Extractor` + une impl déterministe sont posées ici. `create_retriever_tool` (lookup LLM en prod) est une option non requise, hors périmètre.
 
 ---
 
-### Task 1: Modèle `Fact` et opérations de stockage (`memory/facts.py`)
+### Task 1: Modèle `Fact` et helpers (`memory/facts.py`)
 
 **Files:**
 - Create: `src/velmo/memory/facts.py`
 - Test: `tests/test_facts.py`
 
 **Interfaces:**
-- Consumes: `langgraph.store.base.BaseStore`, `langgraph.store.memory.InMemoryStore` (tests).
+- Consumes: `pydantic.BaseModel`.
 - Produces:
-  - `class Fact(BaseModel)` avec champs `user_id: str`, `fact_type: str`, `key: str`, `content: str`, `created_at: str`, `updated_at: str`, `source: str = "tool"`.
+  - `class Fact(BaseModel)` : `user_id: str`, `fact_type: str`, `key: str`, `content: str`, `created_at: str`, `updated_at: str`, `source: str = "tool"`, plus `Fact.new(user_id, fact_type, key, content, source="tool") -> Fact`.
   - `SEMANTIC_TYPES: set[str]`, `EPISODIC_TYPES: set[str]`, `FACT_TYPES: set[str]`.
-  - `write_fact(store, user_id: str, fact_type: str, key: str, content: str, source: str = "tool") -> Fact`
-  - `all_facts(store, user_id: str) -> list[Fact]` (tri `updated_at` décroissant)
-  - `search_facts(store, user_id: str, query: str, fact_types: list[str] | None = None, k: int = 5) -> list[Fact]`
-  - `delete_facts(store, user_id: str, target: str | None = None) -> int`
-  - `render_facts(facts: list[Fact]) -> str`
+  - `is_semantic(fact_type: str) -> bool`.
+  - `render_facts(facts: list[Fact]) -> str`.
 
 - [ ] **Step 1: Write the failing tests**
 
 Créer `tests/test_facts.py` :
 
 ```python
-"""Unit tests for the long-term fact model and store operations."""
+"""Unit tests for the Fact model and helpers."""
 
 from __future__ import annotations
 
-from langgraph.store.memory import InMemoryStore
-
 from velmo.memory.facts import (
-    all_facts,
-    delete_facts,
+    EPISODIC_TYPES,
+    FACT_TYPES,
+    SEMANTIC_TYPES,
+    Fact,
+    is_semantic,
     render_facts,
-    search_facts,
-    write_fact,
 )
 
 
-def test_semantic_fact_replaced_on_conflict():
-    # FR-009 semantic: same (fact_type, key) keeps only the most recent value.
-    store = InMemoryStore()
-    write_fact(store, "u1", "profile", "pointure", "L")
-    write_fact(store, "u1", "profile", "pointure", "XL")
-
-    facts = [f for f in all_facts(store, "u1") if f.key == "pointure"]
-    assert len(facts) == 1
-    assert facts[0].content == "XL"
+def test_fact_new_sets_timestamps_and_default_source():
+    fact = Fact.new("u1", "profile", "pointure", "L")
+    assert fact.created_at == fact.updated_at
+    assert fact.source == "tool"
+    assert fact.user_id == "u1"
 
 
-def test_semantic_fact_preserves_created_at_on_update():
-    store = InMemoryStore()
-    first = write_fact(store, "u1", "profile", "pointure", "L")
-    updated = write_fact(store, "u1", "profile", "pointure", "XL")
-    assert updated.created_at == first.created_at
-    assert updated.updated_at >= first.updated_at
+def test_is_semantic_classification():
+    assert is_semantic("preference") is True
+    assert is_semantic("profile") is True
+    assert is_semantic("order_info") is False
+    assert is_semantic("dispute") is False
 
 
-def test_distinct_semantic_keys_coexist():
-    # Two different preferences must NOT collide.
-    store = InMemoryStore()
-    write_fact(store, "u1", "preference", "tutoiement", "oui")
-    write_fact(store, "u1", "preference", "equipe", "OM")
-    keys = {f.key for f in all_facts(store, "u1")}
-    assert keys == {"tutoiement", "equipe"}
+def test_fact_type_sets_are_disjoint_and_complete():
+    assert SEMANTIC_TYPES.isdisjoint(EPISODIC_TYPES)
+    assert FACT_TYPES == SEMANTIC_TYPES | EPISODIC_TYPES
 
 
-def test_episodic_facts_accumulate():
-    # FR-009 episodic: each entry is kept as a distinct record.
-    store = InMemoryStore()
-    write_fact(store, "u1", "order_info", "order", "O-2024-0101")
-    write_fact(store, "u1", "order_info", "order", "O-2024-0102")
-    orders = [f for f in all_facts(store, "u1") if f.fact_type == "order_info"]
-    assert {f.content for f in orders} == {"O-2024-0101", "O-2024-0102"}
-
-
-def test_isolation_between_users():
-    # R3: a namespace read never leaks another user's facts.
-    store = InMemoryStore()
-    write_fact(store, "u1", "order_info", "order", "O-2024-0101")
-    write_fact(store, "u2", "order_info", "order", "O-2024-0101")  # same content
-    u2 = all_facts(store, "u2")
-    assert len(u2) == 1
-    assert all(f.user_id == "u2" for f in u2)
-
-
-def test_search_filters_by_fact_type():
-    store = InMemoryStore()
-    write_fact(store, "u1", "profile", "pointure", "L")
-    write_fact(store, "u1", "order_info", "order", "O-2024-0101")
-    got = search_facts(store, "u1", "peu importe", fact_types=["profile"])
-    assert [f.key for f in got] == ["pointure"]
-
-
-def test_search_respects_k():
-    store = InMemoryStore()
-    for i in range(7):
-        write_fact(store, "u1", "order_info", "order", f"O-2024-000{i}")
-    assert len(search_facts(store, "u1", "commande", k=3)) == 3
-
-
-def test_delete_target_removes_matching_fact():
-    store = InMemoryStore()
-    write_fact(store, "u1", "profile", "adresse", "12 rue des Lilas")
-    write_fact(store, "u1", "profile", "pointure", "L")
-    removed = delete_facts(store, "u1", target="adresse")
-    assert removed == 1
-    assert {f.key for f in all_facts(store, "u1")} == {"pointure"}
-
-
-def test_delete_all_when_target_none():
-    store = InMemoryStore()
-    write_fact(store, "u1", "profile", "adresse", "12 rue des Lilas")
-    write_fact(store, "u1", "order_info", "order", "O-2024-0101")
-    removed = delete_facts(store, "u1", target=None)
-    assert removed == 2
-    assert all_facts(store, "u1") == []
-
-
-def test_render_facts_lists_content():
-    store = InMemoryStore()
-    write_fact(store, "u1", "profile", "pointure", "L")
-    rendered = render_facts(all_facts(store, "u1"))
+def test_render_facts_lists_key_and_content():
+    facts = [Fact.new("u1", "profile", "pointure", "L")]
+    rendered = render_facts(facts)
     assert "pointure" in rendered
     assert "L" in rendered
+
+
+def test_render_facts_empty_is_empty_string():
+    assert render_facts([]) == ""
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -157,20 +96,19 @@ Expected: FAIL (`ModuleNotFoundError: No module named 'velmo.memory.facts'`).
 Créer `src/velmo/memory/facts.py` :
 
 ```python
-"""Durable facts: the pydantic model and the store operations behind it.
+"""The durable-fact model and its pure helpers.
 
-Facts live in a LangGraph ``BaseStore`` namespaced by ``(user_id,)`` — that
-namespace is what gives R3 isolation by construction. A ``fact_type`` splits
-semantic traits (one mutable value per attribute — FR-009 replace) from episodic
-events (accumulated, never overwritten).
+A ``fact_type`` splits semantic traits (one mutable value per attribute — FR-009
+replace) from episodic events (accumulated, never overwritten). The ``key`` field
+is the attribute name (``pointure``, ``tutoiement``, ``order``…): FR-009 replaces
+on the ``(fact_type, key)`` pair, since a user holds several distinct semantic
+facts at once. No backend knowledge lives here.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
 
-from langgraph.store.base import BaseStore
 from pydantic import BaseModel
 
 SEMANTIC_TYPES = {"preference", "profile"}
@@ -182,6 +120,10 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def is_semantic(fact_type: str) -> bool:
+    return fact_type in SEMANTIC_TYPES
+
+
 class Fact(BaseModel):
     user_id: str
     fact_type: str
@@ -191,92 +133,20 @@ class Fact(BaseModel):
     updated_at: str
     source: str = "tool"
 
-
-def write_fact(
-    store: BaseStore,
-    user_id: str,
-    fact_type: str,
-    key: str,
-    content: str,
-    source: str = "tool",
-) -> Fact:
-    """Write a fact. Semantic types replace the same (fact_type, key); episodic
-    types append a new record."""
-    namespace = (user_id,)
-    now = _now()
-    if fact_type in SEMANTIC_TYPES:
-        storage_key = f"{fact_type}:{key}"
-        existing = store.get(namespace, storage_key)
-        created_at = existing.value["created_at"] if existing else now
-        fact = Fact(
+    @classmethod
+    def new(
+        cls, user_id: str, fact_type: str, key: str, content: str, source: str = "tool"
+    ) -> "Fact":
+        now = _now()
+        return cls(
             user_id=user_id,
             fact_type=fact_type,
             key=key,
             content=content,
-            created_at=created_at,
+            created_at=now,
             updated_at=now,
             source=source,
         )
-        store.put(namespace, storage_key, fact.model_dump())
-        return fact
-
-    storage_key = f"{fact_type}:{key}:{uuid4().hex}"
-    fact = Fact(
-        user_id=user_id,
-        fact_type=fact_type,
-        key=key,
-        content=content,
-        created_at=now,
-        updated_at=now,
-        source=source,
-    )
-    store.put(namespace, storage_key, fact.model_dump())
-    return fact
-
-
-def all_facts(store: BaseStore, user_id: str) -> list[Fact]:
-    """Return every fact of a user, most recently updated first."""
-    items = store.search((user_id,))
-    facts = [Fact(**item.value) for item in items]
-    facts.sort(key=lambda f: f.updated_at, reverse=True)
-    return facts
-
-
-def search_facts(
-    store: BaseStore,
-    user_id: str,
-    query: str,
-    fact_types: list[str] | None = None,
-    k: int = 5,
-) -> list[Fact]:
-    """Return the user's facts relevant to this turn, capped at ``k``.
-
-    ``query`` is accepted for interface stability; semantic ranking against it
-    ships with the embeddings/LangMem increment. Offline the facts are returned
-    most-recent-first, optionally filtered by ``fact_types``.
-    """
-    facts = all_facts(store, user_id)
-    if fact_types:
-        allowed = set(fact_types)
-        facts = [f for f in facts if f.fact_type in allowed]
-    return facts[:k]
-
-
-def delete_facts(store: BaseStore, user_id: str, target: str | None = None) -> int:
-    """Delete facts. ``target=None`` wipes the whole namespace; otherwise delete
-    facts whose key or content contains ``target`` (case-insensitive). Returns the
-    number of facts removed."""
-    namespace = (user_id,)
-    items = store.search(namespace)
-    to_delete: list[str] = []
-    needle = target.lower() if target else None
-    for item in items:
-        fact = Fact(**item.value)
-        if needle is None or needle in fact.key.lower() or needle in fact.content.lower():
-            to_delete.append(item.key)
-    for storage_key in to_delete:
-        store.delete(namespace, storage_key)
-    return len(to_delete)
 
 
 def render_facts(facts: list[Fact]) -> str:
@@ -287,101 +157,303 @@ def render_facts(facts: list[Fact]) -> str:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_facts.py -q`
-Expected: PASS (10 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/velmo/memory/facts.py tests/test_facts.py
-git commit -m "feat: add Fact model and store operations for long-term memory"
+git commit -m "feat: add Fact model and helpers for long-term memory"
 ```
 
 ---
 
-### Task 2: Fabrique du Store (`memory/store.py`)
+### Task 2: `FactStore` — backends local et Chroma (`memory/fact_store.py`)
 
 **Files:**
-- Create: `src/velmo/memory/store.py`
-- Test: `tests/test_memory_store.py`
+- Create: `src/velmo/memory/fact_store.py`
+- Test: `tests/test_fact_store.py`
 
 **Interfaces:**
-- Consumes: `langgraph.store.base.BaseStore`, `langgraph.store.memory.InMemoryStore`.
-- Produces: `get_store() -> BaseStore` (InMemoryStore hors-ligne ; Postgres seam si `DB_URL`).
+- Consumes: `velmo.memory.facts.Fact`, `is_semantic`.
+- Produces:
+  - `class FactStore(Protocol)` : `write(fact: Fact) -> Fact`, `search(user_id: str, query: str, fact_types: list[str] | None = None, k: int = 5) -> list[Fact]`, `all(user_id: str) -> list[Fact]`, `delete(user_id: str, target: str | None = None) -> int`.
+  - `class LocalFactStore` (backend hors-ligne).
+  - `class ChromaFactStore` (backend prod ; collection Chroma).
+  - `get_fact_store() -> FactStore` (Chroma si `CHROMA_URL`, sinon local).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Créer `tests/test_memory_store.py` :
+Créer `tests/test_fact_store.py` :
 
 ```python
-"""Unit test for the long-term store factory."""
+"""Unit tests for the offline fact store (LocalFactStore) and the factory."""
 
 from __future__ import annotations
 
-from langgraph.store.memory import InMemoryStore
+from velmo.memory.facts import Fact
+from velmo.memory.fact_store import LocalFactStore, get_fact_store
 
-from velmo.memory.store import get_store
+
+def _write(store, user_id, fact_type, key, content):
+    return store.write(Fact.new(user_id, fact_type, key, content))
 
 
-def test_get_store_offline_returns_in_memory(monkeypatch):
-    monkeypatch.delenv("DB_URL", raising=False)
-    store = get_store()
-    assert isinstance(store, InMemoryStore)
+def test_semantic_fact_replaced_on_conflict():
+    # FR-009 semantic: same (fact_type, key) keeps only the most recent value.
+    store = LocalFactStore()
+    _write(store, "u1", "profile", "pointure", "L")
+    _write(store, "u1", "profile", "pointure", "XL")
+    pointures = [f for f in store.all("u1") if f.key == "pointure"]
+    assert len(pointures) == 1
+    assert pointures[0].content == "XL"
+
+
+def test_semantic_update_preserves_created_at():
+    store = LocalFactStore()
+    first = _write(store, "u1", "profile", "pointure", "L")
+    updated = _write(store, "u1", "profile", "pointure", "XL")
+    assert updated.created_at == first.created_at
+
+
+def test_distinct_semantic_keys_coexist():
+    store = LocalFactStore()
+    _write(store, "u1", "preference", "tutoiement", "oui")
+    _write(store, "u1", "preference", "equipe", "OM")
+    assert {f.key for f in store.all("u1")} == {"tutoiement", "equipe"}
+
+
+def test_episodic_facts_accumulate():
+    # FR-009 episodic: each entry is kept as a distinct record.
+    store = LocalFactStore()
+    _write(store, "u1", "order_info", "order", "O-2024-0101")
+    _write(store, "u1", "order_info", "order", "O-2024-0102")
+    orders = [f for f in store.all("u1") if f.fact_type == "order_info"]
+    assert {f.content for f in orders} == {"O-2024-0101", "O-2024-0102"}
+
+
+def test_isolation_between_users():
+    # R3: a user's read never leaks another user's facts (separate dicts).
+    store = LocalFactStore()
+    _write(store, "u1", "order_info", "order", "O-2024-0101")
+    _write(store, "u2", "order_info", "order", "O-2024-0101")  # same content
+    u2 = store.all("u2")
+    assert len(u2) == 1
+    assert all(f.user_id == "u2" for f in u2)
+
+
+def test_search_filters_by_fact_type():
+    store = LocalFactStore()
+    _write(store, "u1", "profile", "pointure", "L")
+    _write(store, "u1", "order_info", "order", "O-2024-0101")
+    got = store.search("u1", "peu importe", fact_types=["profile"])
+    assert [f.key for f in got] == ["pointure"]
+
+
+def test_search_respects_k():
+    store = LocalFactStore()
+    for i in range(7):
+        _write(store, "u1", "order_info", "order", f"O-2024-000{i}")
+    assert len(store.search("u1", "commande", k=3)) == 3
+
+
+def test_delete_target_removes_matching_fact():
+    store = LocalFactStore()
+    _write(store, "u1", "profile", "adresse", "12 rue des Lilas")
+    _write(store, "u1", "profile", "pointure", "L")
+    removed = store.delete("u1", target="adresse")
+    assert removed == 1
+    assert {f.key for f in store.all("u1")} == {"pointure"}
+
+
+def test_delete_all_when_target_none():
+    store = LocalFactStore()
+    _write(store, "u1", "profile", "adresse", "12 rue des Lilas")
+    _write(store, "u1", "order_info", "order", "O-2024-0101")
+    assert store.delete("u1", target=None) == 2
+    assert store.all("u1") == []
+
+
+def test_delete_unknown_target_removes_nothing():
+    store = LocalFactStore()
+    _write(store, "u1", "profile", "pointure", "L")
+    assert store.delete("u1", target="adresse") == 0
+    assert len(store.all("u1")) == 1
+
+
+def test_get_fact_store_offline_returns_local(monkeypatch):
+    monkeypatch.delenv("CHROMA_URL", raising=False)
+    assert isinstance(get_fact_store(), LocalFactStore)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_memory_store.py -q`
-Expected: FAIL (`ModuleNotFoundError: No module named 'velmo.memory.store'`).
+Run: `uv run pytest tests/test_fact_store.py -q`
+Expected: FAIL (`ModuleNotFoundError: No module named 'velmo.memory.fact_store'`).
 
 - [ ] **Step 3: Write the implementation**
 
-Créer `src/velmo/memory/store.py` :
+Créer `src/velmo/memory/fact_store.py` :
 
 ```python
-"""Store factory: the LangGraph long-term memory backend.
+"""FactStore: the long-term memory backend, on the kb_store pattern.
 
-``InMemoryStore`` offline (tests, eval); a Postgres store when ``DB_URL`` is set
-and the Postgres store package is installed. Mirrors ``get_checkpointer()`` — the
-Postgres branch is the prod seam, not exercised by the offline suite. Semantic
-indexing (embeddings) ships with the LangMem/episodic increment.
+``LocalFactStore`` (a dict per user_id) is the offline/test backend; a user's
+facts live in a dict another user can't reach — R3 isolation by construction.
+``ChromaFactStore`` is the prod backend: a dedicated Chroma collection
+(``velmo_memory``, distinct from the FAQ's ``velmo_faq``) where isolation rests on
+a ``where={"user_id": …}`` filter applied in one central place. ``get_fact_store``
+selects by ``CHROMA_URL``, exactly like ``get_kb()``.
 """
 
 from __future__ import annotations
 
 import os
+from typing import Protocol
+from uuid import uuid4
 
-from langgraph.store.base import BaseStore
-from langgraph.store.memory import InMemoryStore
+from .facts import Fact, is_semantic
 
 
-def get_store() -> BaseStore:
-    """Return the Postgres store if configured, else the in-memory one."""
-    db_url = os.getenv("DB_URL")
-    if not db_url:
-        return InMemoryStore()
+class FactStore(Protocol):
+    def write(self, fact: Fact) -> Fact: ...
+    def search(
+        self, user_id: str, query: str, fact_types: list[str] | None = None, k: int = 5
+    ) -> list[Fact]: ...
+    def all(self, user_id: str) -> list[Fact]: ...
+    def delete(self, user_id: str, target: str | None = None) -> int: ...
+
+
+def _matches(fact: Fact, needle: str | None) -> bool:
+    return needle is None or needle in fact.key.lower() or needle in fact.content.lower()
+
+
+class LocalFactStore:
+    """Offline backend: one dict of facts per user_id."""
+
+    def __init__(self) -> None:
+        self._by_user: dict[str, dict[str, Fact]] = {}
+
+    def write(self, fact: Fact) -> Fact:
+        bucket = self._by_user.setdefault(fact.user_id, {})
+        if is_semantic(fact.fact_type):
+            storage_key = f"{fact.fact_type}:{fact.key}"
+            existing = bucket.get(storage_key)
+            if existing is not None:
+                fact = fact.model_copy(update={"created_at": existing.created_at})
+        else:
+            storage_key = f"{fact.fact_type}:{fact.key}:{uuid4().hex}"
+        bucket[storage_key] = fact
+        return fact
+
+    def all(self, user_id: str) -> list[Fact]:
+        facts = list(self._by_user.get(user_id, {}).values())
+        facts.sort(key=lambda f: f.updated_at, reverse=True)
+        return facts
+
+    def search(
+        self, user_id: str, query: str, fact_types: list[str] | None = None, k: int = 5
+    ) -> list[Fact]:
+        facts = self.all(user_id)
+        if fact_types:
+            allowed = set(fact_types)
+            facts = [f for f in facts if f.fact_type in allowed]
+        return facts[:k]
+
+    def delete(self, user_id: str, target: str | None = None) -> int:
+        bucket = self._by_user.get(user_id, {})
+        needle = target.lower() if target else None
+        to_delete = [key for key, fact in bucket.items() if _matches(fact, needle)]
+        for key in to_delete:
+            del bucket[key]
+        return len(to_delete)
+
+
+class ChromaFactStore:
+    """Prod backend: a dedicated Chroma collection, isolated by a user_id filter.
+
+    The ``where={"user_id": …}`` filter is applied here and only here — that is
+    the single line R3 isolation depends on in production.
+    """
+
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    def write(self, fact: Fact) -> Fact:
+        if is_semantic(fact.fact_type):
+            storage_key = f"{fact.fact_type}:{fact.key}"
+            existing = self._collection.get(ids=[storage_key])
+            metas = existing.get("metadatas") or []
+            if metas:
+                fact = fact.model_copy(
+                    update={"created_at": metas[0].get("created_at", fact.created_at)}
+                )
+        else:
+            storage_key = f"{fact.fact_type}:{fact.key}:{uuid4().hex}"
+        self._collection.upsert(
+            ids=[storage_key], documents=[fact.content], metadatas=[fact.model_dump()]
+        )
+        return fact
+
+    def all(self, user_id: str) -> list[Fact]:
+        got = self._collection.get(where={"user_id": user_id})
+        facts = [Fact(**meta) for meta in (got.get("metadatas") or [])]
+        facts.sort(key=lambda f: f.updated_at, reverse=True)
+        return facts
+
+    def search(
+        self, user_id: str, query: str, fact_types: list[str] | None = None, k: int = 5
+    ) -> list[Fact]:
+        where: dict = {"user_id": user_id}
+        if fact_types:
+            where = {"$and": [{"user_id": user_id}, {"fact_type": {"$in": list(fact_types)}}]}
+        result = self._collection.query(query_texts=[query], n_results=k, where=where)
+        metas = (result.get("metadatas") or [[]])[0]
+        return [Fact(**meta) for meta in metas]
+
+    def delete(self, user_id: str, target: str | None = None) -> int:
+        got = self._collection.get(where={"user_id": user_id})
+        ids = got.get("ids") or []
+        metas = got.get("metadatas") or []
+        needle = target.lower() if target else None
+        to_delete = [id_ for id_, meta in zip(ids, metas) if _matches(Fact(**meta), needle)]
+        if to_delete:
+            self._collection.delete(ids=to_delete)
+        return len(to_delete)
+
+
+def get_fact_store() -> FactStore:
+    """Return the Chroma-backed store if configured, else the in-memory one."""
+    if not os.getenv("CHROMA_URL"):
+        return LocalFactStore()
     try:
-        from langgraph.store.postgres import PostgresStore
+        import chromadb
+        from chromadb.utils import embedding_functions
     except ImportError:
-        return InMemoryStore()
-    from psycopg import Connection
+        return LocalFactStore()
+    from urllib.parse import urlparse
 
-    conninfo = db_url.replace("postgresql+psycopg://", "postgresql://")
-    conn = Connection.connect(conninfo, autocommit=True, prepare_threshold=0)
-    store = PostgresStore(conn)
-    store.setup()
-    return store
+    parsed = urlparse(os.environ["CHROMA_URL"])
+    client = chromadb.HttpClient(host=parsed.hostname or "localhost", port=parsed.port or 8000)
+    embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
+    )
+    collection = client.get_or_create_collection("velmo_memory", embedding_function=embedder)
+    return ChromaFactStore(collection)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+> `ChromaFactStore` est le seam prod (parallèle à `ChromaKB`) : non exercé par la suite hors-ligne, activé seulement si `CHROMA_URL` est défini.
 
-Run: `uv run pytest tests/test_memory_store.py -q`
-Expected: PASS.
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `uv run pytest tests/test_fact_store.py -q`
+Expected: PASS (11 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/velmo/memory/store.py tests/test_memory_store.py
-git commit -m "feat: add long-term store factory (InMemoryStore offline)"
+git add src/velmo/memory/fact_store.py tests/test_fact_store.py
+git commit -m "feat: add FactStore (LocalFactStore offline, ChromaFactStore prod)"
 ```
 
 ---
@@ -393,7 +465,7 @@ git commit -m "feat: add long-term store factory (InMemoryStore offline)"
 - Test: `tests/test_memory_tools.py`
 
 **Interfaces:**
-- Consumes: `velmo.memory.facts.write_fact`, `all_facts`, `delete_facts`, `render_facts`.
+- Consumes: `velmo.memory.facts.Fact`, `render_facts`; un `FactStore` (`write`/`all`/`delete`).
 - Produces:
   - `remember_fact(store, user_id: str, fact_type: str, key: str, content: str) -> dict`
   - `forget_user_data(store, user_id: str, target: str | None = None) -> dict`
@@ -408,8 +480,7 @@ Créer `tests/test_memory_tools.py` :
 
 from __future__ import annotations
 
-from langgraph.store.memory import InMemoryStore
-
+from velmo.memory.fact_store import LocalFactStore
 from velmo.tools.memory_tools import (
     forget_user_data,
     inspect_user_memory,
@@ -418,14 +489,14 @@ from velmo.tools.memory_tools import (
 
 
 def test_remember_fact_persists():
-    store = InMemoryStore()
+    store = LocalFactStore()
     result = remember_fact(store, "u1", "profile", "pointure", "L")
     assert result["action"] == "remembered"
     assert "pointure" in inspect_user_memory(store, "u1")
 
 
 def test_forget_target_reports_count():
-    store = InMemoryStore()
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "adresse", "12 rue des Lilas")
     result = forget_user_data(store, "u1", target="adresse")
     assert result == {"action": "forgotten", "count": 1}
@@ -433,27 +504,25 @@ def test_forget_target_reports_count():
 
 
 def test_forget_nothing_matching():
-    store = InMemoryStore()
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
-    result = forget_user_data(store, "u1", target="adresse")
-    assert result == {"action": "nothing_to_forget"}
+    assert forget_user_data(store, "u1", target="adresse") == {"action": "nothing_to_forget"}
 
 
 def test_forget_all():
-    store = InMemoryStore()
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
     remember_fact(store, "u1", "order_info", "order", "O-2024-0101")
-    result = forget_user_data(store, "u1", target=None)
-    assert result == {"action": "forgotten", "count": 2}
+    assert forget_user_data(store, "u1", target=None) == {"action": "forgotten", "count": 2}
 
 
 def test_inspect_empty_memory():
-    store = InMemoryStore()
+    store = LocalFactStore()
     assert "aucune information" in inspect_user_memory(store, "u1").lower()
 
 
 def test_inspect_lists_all_facts():
-    store = InMemoryStore()
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
     remember_fact(store, "u1", "preference", "tutoiement", "oui")
     remember_fact(store, "u1", "order_info", "order", "O-2024-0101")
@@ -481,30 +550,29 @@ picks ``user_id`` (per-customer isolation, same discipline as the order tools).
 
 from __future__ import annotations
 
-from langgraph.store.base import BaseStore
-
-from ..memory.facts import all_facts, delete_facts, render_facts, write_fact
+from ..memory.facts import Fact, render_facts
+from ..memory.fact_store import FactStore
 
 
 def remember_fact(
-    store: BaseStore, user_id: str, fact_type: str, key: str, content: str
+    store: FactStore, user_id: str, fact_type: str, key: str, content: str
 ) -> dict:
     """Store a durable fact about the customer."""
-    fact = write_fact(store, user_id, fact_type, key, content)
+    fact = store.write(Fact.new(user_id, fact_type, key, content))
     return {"action": "remembered", "fact_type": fact.fact_type, "key": fact.key}
 
 
-def forget_user_data(store: BaseStore, user_id: str, target: str | None = None) -> dict:
+def forget_user_data(store: FactStore, user_id: str, target: str | None = None) -> dict:
     """Delete a targeted fact or, when ``target`` is None, every fact of the user."""
-    removed = delete_facts(store, user_id, target)
+    removed = store.delete(user_id, target)
     if removed == 0:
         return {"action": "nothing_to_forget"}
     return {"action": "forgotten", "count": removed}
 
 
-def inspect_user_memory(store: BaseStore, user_id: str) -> str:
+def inspect_user_memory(store: FactStore, user_id: str) -> str:
     """Return a human-readable French summary of everything retained (R6)."""
-    facts = all_facts(store, user_id)
+    facts = store.all(user_id)
     if not facts:
         return "Je n'ai aucune information mémorisée à votre sujet."
     return f"Voici ce que j'ai retenu à votre sujet :\n{render_facts(facts)}"
@@ -531,22 +599,27 @@ git commit -m "feat: add remember/forget/inspect memory tools"
 - Test: `tests/test_routing.py` (append)
 
 **Interfaces:**
-- Consumes: `velmo.tools.memory_tools.forget_user_data`, `inspect_user_memory`.
-- Produces: `run_deterministic(session, user_id, kb, message, store=None) -> str | None` (nouveau paramètre `store`, rétro-compatible : `store=None` → aucune intention mémoire routée).
+- Consumes: `velmo.tools.memory_tools.forget_user_data`, `inspect_user_memory`; un `FactStore`.
+- Produces: `run_deterministic(session, user_id, kb, message, store=None) -> str | None` (nouveau paramètre `store` ; `store=None` → aucune intention mémoire routée, rétro-compatible).
 
 - [ ] **Step 1: Write the failing tests**
 
 Ajouter à la fin de `tests/test_routing.py` :
 
 ```python
-from langgraph.store.memory import InMemoryStore
-
+from velmo.memory.fact_store import LocalFactStore
 from velmo.routing import run_deterministic
 from velmo.tools.memory_tools import remember_fact
 
 
+def _store_with_address():
+    store = LocalFactStore()
+    remember_fact(store, "u1", "profile", "adresse", "12 rue des Lilas")
+    return store
+
+
 def test_inspect_intent_routed():
-    store = InMemoryStore()
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
     reply = run_deterministic(None, "u1", None, "que sais-tu de moi ?", store)
     assert reply is not None
@@ -554,28 +627,23 @@ def test_inspect_intent_routed():
 
 
 def test_forget_intent_asks_confirmation_first():
-    store = InMemoryStore()
-    remember_fact(store, "u1", "profile", "adresse", "12 rue des Lilas")
+    store = _store_with_address()
     reply = run_deterministic(None, "u1", None, "oublie mon adresse", store)
     assert reply is not None
     assert "confirme" in reply.lower()
     # Not deleted yet.
-    assert run_deterministic(None, "u1", None, "que sais-tu de moi ?", store) is not None
     assert "Lilas" in run_deterministic(None, "u1", None, "que sais-tu de moi ?", store)
 
 
 def test_forget_intent_deletes_on_confirmation():
-    store = InMemoryStore()
-    remember_fact(store, "u1", "profile", "adresse", "12 rue des Lilas")
+    store = _store_with_address()
     reply = run_deterministic(None, "u1", None, "oublie mon adresse, je confirme", store)
-    assert reply is not None
     assert "fait" in reply.lower()
-    summary = run_deterministic(None, "u1", None, "que sais-tu de moi ?", store)
-    assert "Lilas" not in summary
+    assert "Lilas" not in run_deterministic(None, "u1", None, "que sais-tu de moi ?", store)
 
 
 def test_forget_all_on_confirmation():
-    store = InMemoryStore()
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
     remember_fact(store, "u1", "order_info", "order", "O-2024-0101")
     reply = run_deterministic(None, "u1", None, "oublie tout, je confirme", store)
@@ -585,12 +653,11 @@ def test_forget_all_on_confirmation():
 
 
 def test_no_store_means_no_memory_routing():
-    # Backward compatible: without a store, memory intents fall through to the LLM.
     assert run_deterministic(None, "u1", None, "que sais-tu de moi ?", None) is None
 
 
 def test_forget_unknown_target_is_gentle():
-    store = InMemoryStore()
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
     reply = run_deterministic(None, "u1", None, "oublie mon numéro de contrat, je confirme", store)
     assert "aucune information" in reply.lower()
@@ -598,18 +665,18 @@ def test_forget_unknown_target_is_gentle():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_routing.py -q -k "memory or forget or inspect or store"`
+Run: `uv run pytest tests/test_routing.py -q -k "forget or inspect or store or memory"`
 Expected: FAIL (`run_deterministic` takes 4 positional args, not 5).
 
 - [ ] **Step 3: Write the implementation**
 
-Dans `src/velmo/routing.py`, ajouter l'import en tête (après `from . import tools`) :
+Dans `src/velmo/routing.py`, ajouter l'import après `from . import tools` :
 
 ```python
 from .tools.memory_tools import forget_user_data, inspect_user_memory
 ```
 
-Ajouter ces constantes/ helpers près des autres regex (après `_FAQ_KEYWORDS`) :
+Ajouter, après le bloc `_FAQ_KEYWORDS`, ces constantes et helpers :
 
 ```python
 _FORGET_RE = re.compile(r"\b(?:oubli|supprim|efface)\w*", re.IGNORECASE)
@@ -626,7 +693,9 @@ _GLOBAL_FORGET_HINTS = ("oublie tout", "supprime tout", "efface tout", "toutes m
 
 
 def _extract_forget_target(low: str) -> str | None:
-    match = re.search(r"(?:oubli\w*|supprim\w*|efface\w*)\s+(?:mon|ma|mes|le|la|les|l['’])?\s*(.+)", low)
+    match = re.search(
+        r"(?:oubli\w*|supprim\w*|efface\w*)\s+(?:mon|ma|mes|le|la|les|l['’])?\s*(.+)", low
+    )
     if not match:
         return None
     target = match.group(1)
@@ -638,7 +707,11 @@ def _extract_forget_target(low: str) -> str | None:
 def _handle_forget(store, user_id: str, low: str, confirmed: bool) -> str:
     is_global = any(h in low for h in _GLOBAL_FORGET_HINTS)
     target = None if is_global else _extract_forget_target(low)
-    label = "toutes vos informations" if is_global else (f"« {target} »" if target else "cette information")
+    label = (
+        "toutes vos informations"
+        if is_global
+        else (f"« {target} »" if target else "cette information")
+    )
     if not confirmed:
         return (
             f"Vous souhaitez que j'oublie {label} ? Cette action est irréversible. "
@@ -650,7 +723,7 @@ def _handle_forget(store, user_id: str, low: str, confirmed: bool) -> str:
     return f"C'est fait : j'ai oublié {label} ({result['count']} élément(s) supprimé(s))."
 ```
 
-Puis, dans `run_deterministic`, changer la signature et insérer les intentions mémoire **juste avant** le `return None` final :
+Changer la signature de `run_deterministic` et insérer les intentions mémoire **juste avant** le `return None` final :
 
 ```python
 def run_deterministic(session, user_id: str, kb, message: str, store=None) -> str | None:
@@ -671,7 +744,7 @@ def run_deterministic(session, user_id: str, kb, message: str, store=None) -> st
     return None
 ```
 
-> Note d'intégration : le bloc mémoire est placé **après** les blocs commande/stock/FAQ existants et avant `return None`. Les intentions d'oubli/inspection n'ont ni numéro de commande ni mot-clé stock/FAQ, donc aucun risque de collision.
+> Le bloc mémoire est placé **après** les blocs commande/stock/FAQ et avant `return None`. Les intentions d'oubli/inspection n'ont ni numéro de commande ni mot-clé stock/FAQ : aucune collision.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -694,10 +767,10 @@ git commit -m "feat: route forget/inspect memory intents deterministically"
 - Test: `tests/test_extract.py`
 
 **Interfaces:**
-- Consumes: `velmo.memory.facts.Fact` (structure), `langchain_core.messages.BaseMessage`.
+- Consumes: `velmo.memory.facts.Fact`; `langchain_core.messages.BaseMessage`, `HumanMessage`.
 - Produces:
-  - `class Extractor(Protocol)` avec `extract(self, messages: list[BaseMessage]) -> list[Fact]`.
-  - `class DeterministicExtractor` implémentant `extract` par épinglage d'entités (regex/mots-clés).
+  - `class Extractor(Protocol)` : `extract(self, messages: list[BaseMessage]) -> list[Fact]`.
+  - `class DeterministicExtractor` (constructeur `DeterministicExtractor(user_id: str)`).
 
 > Périmètre : l'extracteur est **posé et testé unitairement** mais **pas encore branché** dans l'agent (le déclenchement automatique = ingestion R4, différé). C'est la brique offline stable derrière laquelle l'impl LangMem/LLM se substituera en prod.
 
@@ -721,8 +794,7 @@ def _facts(text: str):
 
 def test_extracts_order_number_as_episodic():
     facts = _facts("Ma commande O-2024-0101 n'est pas arrivée.")
-    orders = [f for f in facts if f.fact_type == "order_info"]
-    assert any(f.content == "O-2024-0101" for f in orders)
+    assert any(f.fact_type == "order_info" and f.content == "O-2024-0101" for f in facts)
 
 
 def test_extracts_tutoiement_preference():
@@ -767,7 +839,6 @@ one (regex/keyword entity pinning, offline, testable) and — in a later increme
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from typing import Protocol
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -775,17 +846,12 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from .facts import Fact
 
 _ORDER_RE = re.compile(r"O-\d{4}-\d{4}")
-_TUTOIEMENT_HINTS = ("tutoie", "tutoyer", "on peut se tutoyer")
+_TUTOIEMENT_HINTS = ("tutoie", "tutoyer")
 _PRO_HINTS = ("client pro", "revendeur", "professionnel", "compte pro")
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 class Extractor(Protocol):
-    def extract(self, messages: list[BaseMessage]) -> list[Fact]:
-        ...
+    def extract(self, messages: list[BaseMessage]) -> list[Fact]: ...
 
 
 class DeterministicExtractor:
@@ -794,31 +860,17 @@ class DeterministicExtractor:
     def __init__(self, user_id: str) -> None:
         self._user_id = user_id
 
-    def _fact(self, fact_type: str, key: str, content: str) -> Fact:
-        now = _now()
-        return Fact(
-            user_id=self._user_id,
-            fact_type=fact_type,
-            key=key,
-            content=content,
-            created_at=now,
-            updated_at=now,
-            source="extractor",
-        )
-
     def extract(self, messages: list[BaseMessage]) -> list[Fact]:
-        text = " ".join(
-            str(m.content) for m in messages if isinstance(m, HumanMessage)
-        )
+        text = " ".join(str(m.content) for m in messages if isinstance(m, HumanMessage))
         low = text.lower()
         facts: list[Fact] = []
 
         for order_id in dict.fromkeys(_ORDER_RE.findall(text)):
-            facts.append(self._fact("order_info", "order", order_id))
+            facts.append(Fact.new(self._user_id, "order_info", "order", order_id, source="extractor"))
         if any(h in low for h in _TUTOIEMENT_HINTS):
-            facts.append(self._fact("preference", "tutoiement", "oui"))
+            facts.append(Fact.new(self._user_id, "preference", "tutoiement", "oui", source="extractor"))
         if any(h in low for h in _PRO_HINTS):
-            facts.append(self._fact("profile", "segment", "client pro"))
+            facts.append(Fact.new(self._user_id, "profile", "segment", "client pro", source="extractor"))
         return facts
 ```
 
@@ -836,7 +888,7 @@ git commit -m "feat: add deterministic offline fact extractor"
 
 ---
 
-### Task 6: Intégration dans l'agent (retrieval par tour + Store)
+### Task 6: Intégration dans l'agent (retrieval par tour + FactStore)
 
 **Files:**
 - Modify: `src/velmo/agent_graph.py`
@@ -846,52 +898,48 @@ git commit -m "feat: add deterministic offline fact extractor"
 - Test: `tests/test_agent_graph.py` (append)
 
 **Interfaces:**
-- Consumes: `velmo.memory.facts.search_facts`, `render_facts`; `velmo.memory.store.get_store`; `velmo.tools.memory_tools.*`.
+- Consumes: un `FactStore` (`search`/`all`); `velmo.memory.facts.render_facts`; `velmo.memory.fact_store.get_fact_store`; `velmo.tools.memory_tools.*`.
 - Produces:
   - `agent_graph.answer(..., store=None)` — injecte les faits du user dans `context`.
   - `agent_graph.build_graph(..., store=None)` — passe `store` au nœud déterministe et aux outils LLM.
-  - `Agent.__init__(..., store=None)` (défaut `get_store()`), `Agent.inspect_memory(user_id) -> list[Fact]`.
+  - `Agent.__init__(..., store=None)` (défaut `get_fact_store()`), `Agent.inspect_memory(user_id) -> list[Fact]`.
   - `build_tools(session, user_id, kb, store=None)` — ajoute les 3 outils mémoire quand `store` est fourni.
   - `conftest.build_reference_agent(store=None)`, `build_degraded_agent(store=None)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing test**
 
 Ajouter à la fin de `tests/test_agent_graph.py` :
 
 ```python
-from langgraph.store.memory import InMemoryStore
-
 from velmo import agent_graph
 from velmo.llm import OfflineChatModel
+from velmo.memory.fact_store import LocalFactStore
 from velmo.tools.memory_tools import remember_fact
 
 
-def test_answer_injects_facts_into_context():
-    # R2: the user's stored facts reach the LLM prompt via `context`.
-    store = InMemoryStore()
+def test_answer_runs_with_store_wired():
+    # R2 retrieval seam: answer accepts a store and completes a turn.
+    store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
     reply = agent_graph.answer(
         None, "u1", None, "Bonjour",
         chat_model=OfflineChatModel(), store=store,
     )
-    # OfflineChatModel echoes the last human message; the assertion on real recall
-    # lives in the acceptance suite. Here we only assert the call succeeds with a
-    # store wired in (no crash, non-empty reply).
     assert isinstance(reply, str) and reply
 ```
 
-> Note : cet appel passe `session=None`/`kb=None` ; `answer` avec un `OfflineChatModel` et sans intention déterministe route vers le nœud LLM (écho). Le test garde-fou de non-régression du retrieval est surtout couvert par l'acceptance (Task 7).
+> `OfflineChatModel` ne fait qu'un écho ; la preuve du rappel R2 vit dans l'acceptance (Task 7). Ici on vérifie seulement que le retrieval câblé ne casse pas le tour.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_agent_graph.py -q -k inject`
+Run: `uv run pytest tests/test_agent_graph.py -q -k store`
 Expected: FAIL (`answer()` got an unexpected keyword argument `store`).
 
 - [ ] **Step 3: Write the implementation**
 
-**3a — `src/velmo/agent_graph.py`.** Ajouter le paramètre `store` à `build_graph` et `answer`, brancher le retrieval et le nœud déterministe.
+**3a — `src/velmo/agent_graph.py`.**
 
-`build_graph` — nouvelle signature et threading :
+Dans `build_graph`, ajouter `store=None` à la signature, passer `store` au routage et aux outils :
 
 ```python
 def build_graph(
@@ -913,7 +961,7 @@ def build_graph(
         return {"messages": [AIMessage(content=reply)], "matched": True}
 ```
 
-Dans `build_graph`, l'appel à `build_tools` gagne `store` :
+et l'appel à `build_tools` :
 
 ```python
     react = create_agent(
@@ -923,7 +971,7 @@ Dans `build_graph`, l'appel à `build_tools` gagne `store` :
     )
 ```
 
-`answer` — nouvelle signature, retrieval avant la compilation :
+Dans `answer`, ajouter `store=None`, faire la recherche par tour avant la compilation :
 
 ```python
 def answer(
@@ -941,9 +989,9 @@ def answer(
     if chat_model is None:
         chat_model = get_chat_model()
     if store is not None:
-        from .memory.facts import render_facts, search_facts
+        from .memory.facts import render_facts
 
-        memory = render_facts(search_facts(store, user_id, message))
+        memory = render_facts(store.search(user_id, message))
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
     graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store)
@@ -957,22 +1005,24 @@ def answer(
 
 **3b — `src/velmo/agent_tools.py`.** Ajouter `store` et les 3 outils mémoire.
 
-Changer la signature et l'import :
+Import en tête (après `from . import tools`) :
 
 ```python
-from . import tools
 from .tools.memory_tools import (
     forget_user_data as _forget_user_data,
     inspect_user_memory as _inspect_user_memory,
     remember_fact as _remember_fact,
 )
+```
 
+Changer la signature :
 
+```python
 def build_tools(session, user_id: str, kb, store=None) -> list[BaseTool]:
     """Build the per-request toolset bound to one authenticated customer."""
 ```
 
-Avant le `return [...]`, ajouter (seulement si `store` fourni) :
+Remplacer le `return [ ... ]` final par la construction conditionnelle :
 
 ```python
     business_tools = [
@@ -1019,16 +1069,16 @@ Avant le `return [...]`, ajouter (seulement si `store` fourni) :
     return business_tools + [remember_fact, forget_user_data, inspect_user_memory]
 ```
 
-Supprimer l'ancien `return [ ... ]` terminal (remplacé par les branches ci-dessus).
-
 **3c — `src/velmo/agent.py`.** Ajouter `store` et `inspect_memory`.
+
+Import :
 
 ```python
 from .memory.checkpointer import get_checkpointer
-from .memory.store import get_store
+from .memory.fact_store import get_fact_store
 ```
 
-Dans `Agent.__init__`, ajouter le paramètre et l'attribut :
+`__init__` :
 
 ```python
     def __init__(
@@ -1045,10 +1095,10 @@ Dans `Agent.__init__`, ajouter le paramètre et l'attribut :
         self.session = session
         self.kb = kb
         self.checkpointer: BaseCheckpointSaver = checkpointer or get_checkpointer()
-        self.store = store if store is not None else get_store()
+        self.store = store if store is not None else get_fact_store()
 ```
 
-Dans `respond`, passer `store` à `answer` :
+`respond` — passer `store` :
 
 ```python
         answer = agent_graph.answer(
@@ -1063,25 +1113,23 @@ Dans `respond`, passer `store` à `answer` :
         )
 ```
 
-Ajouter la méthode d'inspection (après `get_state`) :
+Ajouter, après `get_state` :
 
 ```python
     def inspect_memory(self, user_id: str):
         """Return the durable facts retained for a user (R6 traceability)."""
-        from .memory.facts import all_facts
-
-        return all_facts(self.store, user_id)
+        return self.store.all(user_id)
 ```
 
-**3d — `tests/conftest.py`.** Passer un Store neuf par agent.
+**3d — `tests/conftest.py`.** Passer un `LocalFactStore` neuf par agent.
 
-Ajouter l'import :
+Import :
 
 ```python
-from langgraph.store.memory import InMemoryStore
+from velmo.memory.fact_store import LocalFactStore
 ```
 
-Modifier les deux fabriques :
+Les deux fabriques :
 
 ```python
 def build_reference_agent(store=None) -> Agent:
@@ -1090,7 +1138,7 @@ def build_reference_agent(store=None) -> Agent:
         guardrails=GuardrailEngine(),
         session=seeded_session(),
         kb=LocalKB(),
-        store=store if store is not None else InMemoryStore(),
+        store=store if store is not None else LocalFactStore(),
     )
 
 
@@ -1100,20 +1148,20 @@ def build_degraded_agent(store=None) -> Agent:
         guardrails=AllowAllGuardrails(),
         session=seeded_session(),
         kb=LocalKB(),
-        store=store if store is not None else InMemoryStore(),
+        store=store if store is not None else LocalFactStore(),
     )
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/test_agent_graph.py tests/test_agent.py tests/test_agent_tools.py -q`
-Expected: PASS (existants + le nouveau `test_answer_injects_facts_into_context`).
+Expected: PASS (existants + `test_answer_runs_with_store_wired`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/velmo/agent_graph.py src/velmo/agent_tools.py src/velmo/agent.py tests/conftest.py tests/test_agent_graph.py
-git commit -m "feat: wire the long-term store into the agent (per-turn retrieval + tools)"
+git commit -m "feat: wire the fact store into the agent (per-turn retrieval + tools)"
 ```
 
 ---
@@ -1121,12 +1169,12 @@ git commit -m "feat: wire the long-term store into the agent (per-turn retrieval
 ### Task 7: Acceptance mémoire long terme + documentation
 
 **Files:**
-- Modify: `tests/acceptance/test_memory.py` (dé-xfail R2/R3/R5, ajout R6/FR-009/FR-010/isolation)
+- Modify: `tests/acceptance/test_memory.py` (dé-xfail R2/R3/R5, ajout R6/FR-009/FR-010)
 - Modify: `CLAUDE.md`
 - Modify: `README.md`
 
 **Interfaces:**
-- Consumes: `conftest.build_reference_agent(store=None)`; `velmo.tools.memory_tools.remember_fact`; `langgraph.store.memory.InMemoryStore`.
+- Consumes: `conftest.build_reference_agent(store=None)`; `velmo.tools.memory_tools.remember_fact`; `velmo.memory.fact_store.LocalFactStore`.
 - Produces: (aucune API — tests + docs)
 
 - [ ] **Step 1: Rewrite the acceptance tests**
@@ -1137,16 +1185,15 @@ Remplacer **intégralement** `tests/acceptance/test_memory.py` par :
 """Tests d'acceptance — mémoire long terme (chantier 003).
 
 R1 (fil court terme) reste couvert via le checkpointer. R2/R3/R5/R6 s'appuient
-sur le Store long terme : on pilote le vrai agent et on assère sur le stocké
+sur le FactStore : on pilote le vrai agent et on assère sur le stocké
 (`Agent.inspect_memory`) ou sur la réponse déterministe (oubli/inspection), jamais
-sur l'écho du modèle offline. Tout tourne sur `InMemoryStore`, sans Docker.
+sur l'écho du modèle offline. Tout tourne sur `LocalFactStore`, sans Docker.
 """
 
 from __future__ import annotations
 
-from langgraph.store.memory import InMemoryStore
-
 from conftest import build_reference_agent
+from velmo.memory.fact_store import LocalFactStore
 from velmo.tools.memory_tools import remember_fact
 
 
@@ -1164,15 +1211,14 @@ def test_recall_over_30_messages():
 
 def test_cross_session_persistence():
     # R2 : pointure, clubs et segment retrouvés une session plus tard (même Store).
-    store = InMemoryStore()
-    session1 = build_reference_agent(store)
+    store = LocalFactStore()
+    build_reference_agent(store)  # session 1
     remember_fact(store, "acc-marc", "profile", "pointure", "L")
     remember_fact(store, "acc-marc", "profile", "clubs", "OM et Brésil")
     remember_fact(store, "acc-marc", "profile", "segment", "revendeur")
 
     session2 = build_reference_agent(store)  # nouvelle session, même client, même Store
-    facts = session2.inspect_memory("acc-marc")
-    contents = " ".join(f.content for f in facts)
+    contents = " ".join(f.content for f in session2.inspect_memory("acc-marc"))
     assert "L" in contents
     assert "OM" in contents
     assert "revendeur" in contents
@@ -1180,7 +1226,7 @@ def test_cross_session_persistence():
 
 def test_isolation_between_customers():
     # R3 : Marc ne voit jamais les commandes de Sophie.
-    store = InMemoryStore()
+    store = LocalFactStore()
     agent = build_reference_agent(store)
     remember_fact(store, "acc-marc", "order_info", "order", "O-2024-0103")
     remember_fact(store, "acc-sophie", "order_info", "order", "O-2024-0107")
@@ -1192,7 +1238,7 @@ def test_isolation_between_customers():
 
 def test_right_to_be_forgotten():
     # R5 : « oublie mon adresse » supprime effectivement l'information via l'agent.
-    store = InMemoryStore()
+    store = LocalFactStore()
     agent = build_reference_agent(store)
     user = "acc-forget"
     remember_fact(store, user, "profile", "adresse", "12 rue des Lilas")
@@ -1208,7 +1254,7 @@ def test_right_to_be_forgotten():
 
 def test_inspect_user_memory():
     # R6 : l'inspection restitue tous les faits actifs.
-    store = InMemoryStore()
+    store = LocalFactStore()
     agent = build_reference_agent(store)
     user = "acc-inspect"
     remember_fact(store, user, "profile", "pointure", "L")
@@ -1223,7 +1269,7 @@ def test_inspect_user_memory():
 
 def test_semantic_conflict_keeps_latest():
     # FR-009 sémantique : une seule pointure subsiste (la plus récente).
-    store = InMemoryStore()
+    store = LocalFactStore()
     agent = build_reference_agent(store)
     user = "acc-conflict"
     remember_fact(store, user, "profile", "pointure", "L")
@@ -1235,7 +1281,7 @@ def test_semantic_conflict_keeps_latest():
 
 def test_episodic_facts_accumulate():
     # FR-009 épisodique : deux commandes distinctes coexistent.
-    store = InMemoryStore()
+    store = LocalFactStore()
     agent = build_reference_agent(store)
     user = "acc-orders"
     remember_fact(store, user, "order_info", "order", "O-2024-0101")
@@ -1246,7 +1292,7 @@ def test_episodic_facts_accumulate():
 
 def test_forget_confirmation_is_deterministic_template():
     # FR-010 : la confirmation est un gabarit littéral et stable, pas du LLM.
-    store = InMemoryStore()
+    store = LocalFactStore()
     agent = build_reference_agent(store)
     user = "acc-fr010"
     remember_fact(store, user, "profile", "adresse", "12 rue des Lilas")
@@ -1258,33 +1304,33 @@ def test_forget_confirmation_is_deterministic_template():
 - [ ] **Step 2: Run the acceptance tests**
 
 Run: `uv run pytest tests/acceptance/test_memory.py -q`
-Expected: PASS (9 tests ; les anciens xfail R2/R3/R5 sont désormais des tests verts).
+Expected: PASS (8 tests ; les anciens xfail R2/R3/R5 sont désormais verts).
 
 - [ ] **Step 3: Update the documentation**
 
-Dans `CLAUDE.md`, section « Trois modules à construire », remplacer le bullet **Mémoire long terme** par un état à jour :
+Dans `CLAUDE.md`, section « Trois modules à construire », remplacer le bullet **Mémoire long terme** par :
 
 ```markdown
-- **Mémoire long terme (chantier 003, fait pour R2/R3/R5/R6)** : Store LangGraph
-  (`velmo.memory.store.get_store` : `InMemoryStore` hors-ligne, Postgres en prod)
-  namespacé par `user_id`. Faits typés (`velmo.memory.facts.Fact`, sémantique vs
-  épisodique, FR-009), trois outils (`velmo.tools.memory_tools` :
-  `remember_fact`/`forget_user_data`/`inspect_user_memory`), recherche par tour
-  injectée dans le `context` du graphe. Intentions d'oubli/inspection routées en
-  déterministe (FR-010). **Différé** : extraction auto LangMem/LLM, ingestion
+- **Mémoire long terme (chantier 003, fait pour R2/R3/R5/R6)** : `FactStore` sur le
+  patron `kb_store` (`velmo.memory.fact_store.get_fact_store` : `LocalFactStore`
+  hors-ligne, `ChromaFactStore` / collection `velmo_memory` en prod). Faits typés
+  (`velmo.memory.facts.Fact`, sémantique vs épisodique, FR-009), trois outils
+  (`velmo.tools.memory_tools` : `remember_fact`/`forget_user_data`/`inspect_user_memory`),
+  recherche par tour injectée dans le `context` du graphe. Intentions d'oubli/inspection
+  routées en déterministe (FR-010). **Différé** : extraction auto LangMem/LLM, ingestion
   « sans perte » de l'excédent (R4), async.
 ```
 
-Dans `README.md`, section « Features », remplacer la ligne « Mémoire durable et isolée par client (à construire) » par :
+Dans `README.md`, section « Features », remplacer « Mémoire durable et isolée par client (à construire) » par :
 
 ```markdown
-- Mémoire durable et isolée par client : faits durables (Store LangGraph), droit à l'oubli (RGPD) et inspection
+- Mémoire durable et isolée par client : faits durables (FactStore Chroma/local), droit à l'oubli (RGPD) et inspection
 ```
 
 Et dans le « Layout » du README, mettre à jour la ligne `memory/` :
 
 ```markdown
-  memory/           Mémoire court terme (checkpointer) + long terme (Store, faits, oubli, inspection)
+  memory/           Mémoire court terme (checkpointer) + long terme (FactStore, faits, oubli, inspection)
 ```
 
 - [ ] **Step 4: Run the whole suite**
@@ -1304,16 +1350,17 @@ git commit -m "test: long-term memory acceptance (R2/R3/R5/R6) + docs"
 ## Self-Review
 
 **1. Spec coverage :**
-- R2 (faits cross-session) → Task 1 (`write_fact`/`all_facts`), Task 6 (retrieval par tour → `context`), Task 7 (`test_cross_session_persistence`). ✅
-- R3 (isolation) → namespace `(user_id,)` Task 1, Task 7 (`test_isolation_between_customers`, `test_isolation_between_users`). ✅
-- R5 (droit à l'oubli) → `delete_facts` Task 1, `forget_user_data` Task 3, routage + confirmation Task 4, `test_right_to_be_forgotten` Task 7. ✅
-- R6 (inspection) → `all_facts`/`inspect_user_memory` Tasks 1/3, `Agent.inspect_memory` Task 6, `test_inspect_user_memory` Task 7. ✅
-- FR-009 sémantique/épisodique → Task 1 + acceptance Task 7. ✅
+- R2 (faits cross-session) → Task 2 (`FactStore.write`/`all`), Task 6 (retrieval par tour → `context`), Task 7 (`test_cross_session_persistence`). ✅
+- R3 (isolation) → dict par `user_id` (Task 2 `LocalFactStore`) / filtre `where` (Task 2 `ChromaFactStore`), Task 7 (`test_isolation_between_customers`, `test_isolation_between_users`). ✅
+- R5 (droit à l'oubli) → `FactStore.delete` Task 2, `forget_user_data` Task 3, routage + confirmation Task 4, `test_right_to_be_forgotten` Task 7. ✅
+- R6 (inspection) → `FactStore.all`/`inspect_user_memory` Tasks 2/3, `Agent.inspect_memory` Task 6, `test_inspect_user_memory` Task 7. ✅
+- FR-009 sémantique/épisodique → Task 2 + acceptance Task 7. ✅
 - FR-010 (gabarit déterministe) → Task 4 `_handle_forget`, `test_forget_confirmation_is_deterministic_template` Task 7. ✅
-- FR-003 (filtre `fact_type`) → `search_facts(fact_types=...)` Task 1. ✅ (classement sémantique par embedding = différé, documenté.)
+- FR-003 (filtre `fact_type`) → `search(fact_types=...)` Task 2. ✅ (classement sémantique par embedding = différé, documenté.)
+- FactStore Chroma en prod, FAQ non touchée → Task 2 (`ChromaFactStore`, collection `velmo_memory`). ✅
 - Extracteur (interface + impl déterministe) → Task 5. ✅
-- Différé (LangMem, R4 ingestion, async) → non implémenté, documenté dans Global Constraints + spec §7. ✅
+- Différé (LangMem, R4 ingestion, async, `create_retriever_tool`) → non implémenté, documenté dans Global Constraints + spec §7. ✅
 
 **2. Placeholder scan :** aucun TBD/TODO ; chaque étape de code porte le code complet. ✅
 
-**3. Type consistency :** `Fact(user_id, fact_type, key, content, created_at, updated_at, source)` identique partout ; `write_fact`/`search_facts`/`delete_facts`/`all_facts`/`render_facts` mêmes signatures entre Task 1 (définition), Task 3 (tools), Task 6 (agent). `run_deterministic(..., store=None)` cohérent Task 4 ↔ Task 6. `build_tools(session, user_id, kb, store=None)` cohérent Task 6. `build_reference_agent(store=None)` cohérent Tasks 6/7. ✅
+**3. Type consistency :** `Fact(user_id, fact_type, key, content, created_at, updated_at, source)` identique partout ; `Fact.new(...)` cohérent Tasks 3/5. Méthodes `FactStore.write/search/all/delete` (Task 2) appelées à l'identique par les tools (Task 3), le routage (Task 4) et l'agent (Task 6). `run_deterministic(..., store=None)` cohérent Task 4 ↔ Task 6. `build_tools(session, user_id, kb, store=None)` cohérent Task 6. `build_reference_agent(store=None)` cohérent Tasks 6/7. ✅
