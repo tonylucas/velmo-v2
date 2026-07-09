@@ -206,6 +206,19 @@ repris au chantier suivant.
 - **Message bloqué par un garde-fou d'entrée** : le graphe n'est pas invoqué,
   donc le message n'entre pas dans l'historique du checkpointer. Comportement
   acceptable, voire souhaitable (on ne mémorise pas une requête refusée).
+- **Garde-fou de sortie et checkpointer (à résoudre au chantier 004)** :
+  `Agent.respond` appelle `agent_graph.answer(...)`, qui invoque le graphe —
+  et le `graph.invoke` **persiste** la réponse brute du LLM dans le
+  checkpointer en interne, *avant* que `respond` n'applique
+  `guardrails.check_output` sur la valeur de retour. Si `check_output` bloque,
+  seul le texte renvoyé à l'utilisateur est remplacé par un refus : l'historique
+  persisté garde la réponse brute, qui pourrait resurgir au tour suivant via la
+  fenêtre glissante. **Inerte en 002** : `GuardrailEngine.check_output` est un
+  stub qui autorise toujours (aucune réponse n'est jamais bloquée hors-ligne).
+  Le correctif revient au chantier 004 (garde-fous), quand `check_output`
+  deviendra réel — par exemple en faisant du filtrage de sortie un nœud du
+  graphe (bloque avant persistance) ou en réécrivant le dernier message
+  persisté via `graph.update_state` après un blocage.
 - **Fenêtre glissante et paires tool_call/tool_response** : `window_messages`
   découpe par simple comptage (`messages[-30:]`), sans connaître la structure
   des tours. Sur une conversation longue et riche en appels d'outils, la
