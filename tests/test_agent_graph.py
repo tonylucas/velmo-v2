@@ -10,7 +10,6 @@ from velmo import agent_graph
 from velmo.agent_graph import answer, build_graph, get_state, select_memory, window_messages
 from velmo.llm import OfflineChatModel
 from velmo.memory.fact_store import LocalFactStore
-from velmo.memory.facts import Fact
 from velmo.tools.memory_tools import remember_fact
 
 
@@ -170,17 +169,19 @@ def test_answer_runs_with_store_wired():
 
 
 def test_select_memory_keeps_semantic_facts_despite_episodic_volume():
-    # R2/Fix B: episodic volume must never evict durable semantic preferences
-    # from the facts injected into the prompt this turn.
+    # R2: durable semantic traits recorded early must survive a later burst of
+    # episodic facts. A single recency-ordered top-k search would evict the
+    # older semantic facts; select_memory runs two separate searches so they
+    # are always retained.
     store = LocalFactStore()
-    user = "u1"
+    user = "u-evict"
+    # Semantic traits recorded first (oldest entries).
+    remember_fact(store, user, "preference", "tutoiement", "oui")
+    remember_fact(store, user, "profile", "pointure", "L")
+    # Later burst of more-recent episodic facts.
     for i in range(6):
-        store.write(Fact.new(user, "order_info", "order", f"O-2024-000{i}"))
-    store.write(Fact.new(user, "preference", "tutoiement", "oui"))
-    store.write(Fact.new(user, "profile", "pointure", "L"))
+        remember_fact(store, user, "order_info", "order", f"O-2024-010{i}")
 
-    selected = select_memory(store, user, "peu importe")
-
-    keys = {f.key for f in selected}
+    keys = {f.key for f in select_memory(store, user, "peu importe")}
     assert "tutoiement" in keys
     assert "pointure" in keys
