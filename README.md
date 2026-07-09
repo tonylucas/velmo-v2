@@ -7,7 +7,7 @@ Assistant de support pour **Velmo**, boutique en ligne de maillots de foot colle
 - Outils métier connectés à la base : commandes, suivi, stock, retours, remboursements, escalade
 - Garde-fous métier intégrés : isolation par client, blocage des modifications après expédition, plafond de remboursement (50 €) avec escalade
 - FAQ par recherche sémantique (RAG) sur la base de connaissances Velmo
-- Mémoire durable et isolée par client (à construire)
+- Mémoire durable et isolée par client : faits durables (FactStore Chroma/local), droit à l'oubli (RGPD) et inspection
 - Garde-fous de contenu en entrée/sortie (à construire)
 - Chaîne qualité MLOps : évaluation, note globale, seuil bloquant en CI (à construire)
 
@@ -87,7 +87,7 @@ src/velmo/
   db.py             Schéma SQLAlchemy + sessions
   sampledata.py     Jeu de données de référence
   tools/            10 outils métier (accès Postgres + FAQ)
-  memory/           Mémoire court + long terme (à construire)
+  memory/           Mémoire court terme (checkpointer) + long terme (FactStore, faits, oubli, inspection)
   guardrails/       Garde-fous de contenu entrée/sortie (à construire)
   mlops/            Évaluation, note globale, seuil, rapport (à construire)
 docs/reco_expert.md Note de recommandations (stack + exigences)
