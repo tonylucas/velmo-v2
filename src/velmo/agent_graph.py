@@ -104,7 +104,7 @@ def answer(
     if store is not None:
         from .memory.facts import render_facts
 
-        memory = render_facts(store.search(user_id, message))
+        memory = render_facts(select_memory(store, user_id, message))
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
     graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store)
@@ -114,6 +114,15 @@ def answer(
         config,
     )
     return result["messages"][-1].content
+
+
+def select_memory(store, user_id: str, message: str, k: int = 5) -> list:
+    """Facts to inject this turn: semantic traits (always) + recent episodic."""
+    from .memory.facts import EPISODIC_TYPES, SEMANTIC_TYPES
+
+    semantic = store.search(user_id, message, fact_types=list(SEMANTIC_TYPES), k=k)
+    episodic = store.search(user_id, message, fact_types=list(EPISODIC_TYPES), k=k)
+    return semantic + episodic
 
 
 def _state_reader_graph(checkpointer: BaseCheckpointSaver):

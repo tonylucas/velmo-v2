@@ -7,9 +7,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from velmo import agent_graph
-from velmo.agent_graph import answer, build_graph, get_state, window_messages
+from velmo.agent_graph import answer, build_graph, get_state, select_memory, window_messages
 from velmo.llm import OfflineChatModel
 from velmo.memory.fact_store import LocalFactStore
+from velmo.memory.facts import Fact
 from velmo.tools.memory_tools import remember_fact
 
 
@@ -166,3 +167,20 @@ def test_answer_runs_with_store_wired():
         chat_model=OfflineChatModel(), store=store,
     )
     assert isinstance(reply, str) and reply
+
+
+def test_select_memory_keeps_semantic_facts_despite_episodic_volume():
+    # R2/Fix B: episodic volume must never evict durable semantic preferences
+    # from the facts injected into the prompt this turn.
+    store = LocalFactStore()
+    user = "u1"
+    for i in range(6):
+        store.write(Fact.new(user, "order_info", "order", f"O-2024-000{i}"))
+    store.write(Fact.new(user, "preference", "tutoiement", "oui"))
+    store.write(Fact.new(user, "profile", "pointure", "L"))
+
+    selected = select_memory(store, user, "peu importe")
+
+    keys = {f.key for f in selected}
+    assert "tutoiement" in keys
+    assert "pointure" in keys
