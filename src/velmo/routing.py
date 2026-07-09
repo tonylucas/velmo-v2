@@ -14,6 +14,7 @@ import re
 from collections.abc import Callable
 
 from . import tools
+from .tools.memory_tools import forget_user_data, inspect_user_memory
 
 SYSTEM_PROMPT = (
     "Tu es l'assistant de support de Velmo, boutique de maillots de foot collector. "
@@ -44,8 +45,51 @@ _FAQ_KEYWORDS = (
     "retractation", "entretien", "garantie", "remboursement sous", "conditions d'échange",
 )
 
+_FORGET_RE = re.compile(r"\b(?:oubli|supprim|efface)\w*", re.IGNORECASE)
+_INSPECT_HINTS = (
+    "que sais-tu de moi",
+    "que sais tu de moi",
+    "quelles informations",
+    "quelles infos",
+    "que retiens-tu",
+    "que retiens tu",
+    "quelles données",
+)
+_GLOBAL_FORGET_HINTS = ("oublie tout", "supprime tout", "efface tout", "toutes mes", "tout ce que")
 
-def run_deterministic(session, user_id: str, kb, message: str) -> str | None:
+
+def _extract_forget_target(low: str) -> str | None:
+    match = re.search(
+        r"(?:oubli\w*|supprim\w*|efface\w*)\s+(?:mon|ma|mes|le|la|les|l['’])?\s*(.+)", low
+    )
+    if not match:
+        return None
+    target = match.group(1)
+    for phrase in ("je confirme", "c'est confirmé", "confirme", "oui je", "vas-y"):
+        target = target.replace(phrase, "")
+    return target.strip(" ,.;:!?'’\"") or None
+
+
+def _handle_forget(store, user_id: str, low: str, confirmed: bool) -> str:
+    is_global = any(h in low for h in _GLOBAL_FORGET_HINTS)
+    target = None if is_global else _extract_forget_target(low)
+    label = (
+        "toutes vos informations"
+        if is_global
+        else (f"« {target} »" if target else "cette information")
+    )
+    if not confirmed:
+        return (
+            f"Vous souhaitez que j'oublie {label} ? Cette action est irréversible. "
+            "Répondez « je confirme » pour valider."
+        )
+    result = forget_user_data(store, user_id, target)
+    if result["action"] == "nothing_to_forget":
+        return "Je n'ai trouvé aucune information de ce type à oublier."
+    return f"C'est fait : j'ai oublié {label} ({result['count']} élément(s) supprimé(s))."
+
+
+def run_deterministic(session, user_id: str, kb, message: str, store=None) -> str | None:
     """Route a message to a business tool by regex. Return the reply, or None
     when no deterministic intent matches (LLM fallback)."""
     low = message.lower()
@@ -95,6 +139,11 @@ def run_deterministic(session, user_id: str, kb, message: str) -> str | None:
 
     if any(k in low for k in _FAQ_KEYWORDS):
         return _format_kb(tools.search_kb(kb, message))
+
+    if store is not None and any(h in low for h in _INSPECT_HINTS):
+        return inspect_user_memory(store, user_id)
+    if store is not None and _FORGET_RE.search(low):
+        return _handle_forget(store, user_id, low, confirmed)
 
     return None
 
