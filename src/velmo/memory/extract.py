@@ -36,9 +36,15 @@ class DeterministicExtractor:
         facts: list[Fact] = []
 
         for order_id in dict.fromkeys(_ORDER_RE.findall(text)):
-            facts.append(Fact.new(self._user_id, "order_info", "order", order_id, source="extractor"))
+            facts.append(
+                Fact.new(self._user_id, "order_info", "order", order_id, source="extractor")
+            )
         if any(h in low for h in _TUTOIEMENT_HINTS):
-            facts.append(Fact.new(self._user_id, "preference", "tutoiement", "oui", source="extractor"))
+            facts.append(
+                Fact.new(self._user_id, "preference", "tutoiement", "oui", source="extractor")
+            )
         if any(h in low for h in _PRO_HINTS):
-            facts.append(Fact.new(self._user_id, "profile", "segment", "client pro", source="extractor"))
+            facts.append(
+                Fact.new(self._user_id, "profile", "segment", "client pro", source="extractor")
+            )
         return facts
