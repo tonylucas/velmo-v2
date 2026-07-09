@@ -10,9 +10,7 @@ from ..memory.facts import Fact, render_facts
 from ..memory.fact_store import FactStore
 
 
-def remember_fact(
-    store: FactStore, user_id: str, fact_type: str, key: str, content: str
-) -> dict:
+def remember_fact(store: FactStore, user_id: str, fact_type: str, key: str, content: str) -> dict:
     """Store a durable fact about the customer."""
     fact = store.write(Fact.new(user_id, fact_type, key, content))
     return {"action": "remembered", "fact_type": fact.fact_type, "key": fact.key}
