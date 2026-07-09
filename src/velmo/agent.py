@@ -1,18 +1,19 @@
-"""Agent Velmo 2.0 : garde-fou d'entrée → mémoire → graphe (routage déterministe
-+ nœud LLM outillé) → garde-fou de sortie → écriture mémoire.
+"""Agent Velmo 2.0 : garde-fou d'entrée → graphe (routage déterministe + nœud LLM
+outillé, mémoire court terme via checkpointer) → garde-fou de sortie → réponse.
 
-`Agent.respond` orchestre le pipeline ; le raisonnement (routage regex + agent
-LangGraph) vit dans `velmo.agent_graph`. La mémoire et les garde-fous de contenu
-sont encore des stubs (chantiers suivants).
+Le fil de conversation est persisté par le checkpointer LangGraph
+(`thread_id = user_id`) ; il n'y a plus de gestionnaire de mémoire maison. Les
+garde-fous de contenu sont encore des stubs (chantier 004).
 """
 
 from __future__ import annotations
 
 from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from . import agent_graph
 from .guardrails import GuardrailEngine
-from .memory import MemoryManager
+from .memory.checkpointer import get_checkpointer
 
 DEFAULT_REFUSAL = (
     "Désolé, je ne peux pas traiter cette demande. Je reste à votre disposition "
@@ -26,40 +27,40 @@ class Agent:
     def __init__(
         self,
         chat_model: BaseChatModel | None,
-        memory: MemoryManager,
         guardrails: GuardrailEngine,
         session=None,
         kb=None,
+        checkpointer: BaseCheckpointSaver | None = None,
     ) -> None:
         self.chat_model = chat_model
-        self.memory = memory
         self.guardrails = guardrails
         self.session = session
         self.kb = kb
+        self.checkpointer: BaseCheckpointSaver = checkpointer or get_checkpointer()
 
     def respond(self, user_id: str, message: str) -> str:
         gate_in = self.guardrails.check_input(message)
         if not gate_in.allowed:
-            refusal = gate_in.refusal or DEFAULT_REFUSAL
-            self.memory.write(user_id, message, refusal)
-            return refusal
+            return gate_in.refusal or DEFAULT_REFUSAL
 
-        context = self.memory.read(user_id, message).render()
         answer = agent_graph.answer(
             self.session,
             user_id,
             self.kb,
             message,
-            context=context,
             chat_model=self.chat_model,
+            checkpointer=self.checkpointer,
+            thread_id=user_id,
         )
 
         gate_out = self.guardrails.check_output(answer)
         if not gate_out.allowed:
             answer = gate_out.refusal or DEFAULT_REFUSAL
-
-        self.memory.write(user_id, message, answer)
         return answer
+
+    def get_state(self, user_id: str):
+        """Return the conversation messages retained for a user (traceability)."""
+        return agent_graph.get_state(self.checkpointer, user_id)
 
 
 def build_default_agent(session=None, kb=None) -> Agent:
@@ -74,7 +75,6 @@ def build_default_agent(session=None, kb=None) -> Agent:
         kb = get_kb()
     return Agent(
         chat_model=get_chat_model(),
-        memory=MemoryManager(),
         guardrails=GuardrailEngine(),
         session=session,
         kb=kb,
