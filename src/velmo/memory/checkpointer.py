@@ -26,9 +26,18 @@ def get_checkpointer() -> BaseCheckpointSaver:
     except ImportError:
         return InMemorySaver()
     from psycopg import Connection
+    from psycopg import errors as pg_errors
 
     conninfo = db_url.replace("postgresql+psycopg://", "postgresql://")
     conn = Connection.connect(conninfo, autocommit=True, prepare_threshold=0)
     saver = PostgresSaver(conn)
-    saver.setup()
+    try:
+        saver.setup()
+    except (pg_errors.DuplicateColumn, pg_errors.DuplicateTable):
+        # The checkpoint schema is already present (tables created by a prior or
+        # newer langgraph-checkpoint-postgres whose migration bookkeeping diverges).
+        # setup() is not idempotent across that skew; the column/table it tries to
+        # add already exists, so the schema is usable as-is. autocommit=True means
+        # no aborted transaction to recover from.
+        pass
     return saver
