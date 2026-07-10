@@ -11,6 +11,17 @@ def _facts(text: str):
     return DeterministicExtractor().extract("u1", [HumanMessage(content=text)])
 
 
+def test_size_regex_does_not_match_unrelated_je_fais_clauses():
+    for text in (
+        "Je fais appel à l'équipe pour ma commande.",
+        "Je fais suivre au service M. Dupont.",
+        "Je fais du sport, la taille L est-elle dispo ?",
+    ):
+        facts = _facts(text)
+        pointures = [f for f in facts if f.fact_type == "profile" and f.key == "pointure"]
+        assert pointures == [], f"spurious pointure extracted from {text!r}: {pointures}"
+
+
 def test_extracts_order_number_as_episodic():
     facts = _facts("Ma commande O-2024-0101 n'est pas arrivée.")
     assert any(f.fact_type == "order_info" and f.content == "O-2024-0101" for f in facts)

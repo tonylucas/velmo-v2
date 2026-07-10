@@ -20,9 +20,11 @@ from .facts import FACT_TYPES, Fact
 
 _ORDER_RE = re.compile(r"O-\d{4}-\d{4}")
 _SIZE_RE = re.compile(
-    # First-person statements of one's own size — avoids matching stock questions
-    # like "la taille L est-elle dispo ?" (no "je"/"ma" cue).
-    r"\b(?:je\s+chausse|je\s+fais|je\s+taille|ma\s+pointure)\b[^.\n]*?\b(XXL|XL|XS|S|M|L)\b",
+    # First-person statements of one's own size, with the size token immediately
+    # adjacent to the cue — avoids matching unrelated clauses like "je fais appel
+    # à l'équipe" or stock questions like "la taille L est-elle dispo ?".
+    r"\b(?:je\s+chausse|je\s+fais|je\s+taille|ma\s+pointure)\s+"
+    r"(?:du\s+|un\s+|une\s+|taille\s+|le\s+|est\s+)?(XXL|XL|XS|S|M|L)\b",
     re.IGNORECASE,
 )
 _TUTOIEMENT_HINTS = ("tutoie", "tutoyer")
