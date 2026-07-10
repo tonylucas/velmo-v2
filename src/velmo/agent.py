@@ -9,11 +9,13 @@ garde-fous de contenu sont encore des stubs (chantier 004).
 from __future__ import annotations
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from . import agent_graph
 from .guardrails import GuardrailEngine
 from .memory.checkpointer import get_checkpointer
+from .memory.extract import Extractor, get_extractor
 from .memory.fact_store import get_fact_store
 
 DEFAULT_REFUSAL = (
@@ -33,6 +35,7 @@ class Agent:
         kb=None,
         checkpointer: BaseCheckpointSaver | None = None,
         store=None,
+        extractor: Extractor | None = None,
     ) -> None:
         self.chat_model = chat_model
         self.guardrails = guardrails
@@ -40,6 +43,7 @@ class Agent:
         self.kb = kb
         self.checkpointer: BaseCheckpointSaver = checkpointer or get_checkpointer()
         self.store = store if store is not None else get_fact_store()
+        self.extractor: Extractor = extractor if extractor is not None else get_extractor()
 
     def respond(self, user_id: str, message: str) -> str:
         gate_in = self.guardrails.check_input(message)
@@ -56,6 +60,11 @@ class Agent:
             thread_id=user_id,
             store=self.store,
         )
+
+        # Memory write step of the pipeline: extract durable facts from the user
+        # message and persist them (FactStore.write applies FR-009 consolidation).
+        for fact in self.extractor.extract(user_id, [HumanMessage(content=message)]):
+            self.store.write(fact)
 
         gate_out = self.guardrails.check_output(answer)
         if not gate_out.allowed:
