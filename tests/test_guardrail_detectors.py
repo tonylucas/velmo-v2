@@ -80,11 +80,11 @@ def test_foreign_email_flags_other_customer_only():
 
 
 def test_foreign_email_allows_velmo_support_address():
-    # Velmo's own support/contact address is not a leak, even though it isn't
-    # the session customer's own email.
+    # Velmo's own support address (kb/docs/contact-pro.md) is not a leak, even
+    # though it isn't the session customer's own email.
     identity = Identity(email="marc@velmo.fr")
-    assert foreign_email("contactez-nous a contact@velmo.fr", identity) is None
-    # A lookalike address on the same domain that belongs to another customer
+    assert foreign_email("ecrivez a pro@velmo.example en precisant votre SIRET", identity) is None
+    # A lookalike address on a different domain that belongs to another customer
     # must still be flagged (this is not a blanket domain exemption).
     assert foreign_email("on ecrit a sophie@velmo.fr", identity) == "sophie@velmo.fr"
 
