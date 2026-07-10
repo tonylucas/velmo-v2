@@ -17,6 +17,7 @@ from .patterns import (
     MODERATION,
     OUT_OF_SCOPE_TERMS,
     SECRET_LEAK_TERMS,
+    SUPPORT_EMAILS,
     normalize,
 )
 
@@ -88,11 +89,16 @@ def scan_secrets(text: str) -> tuple[str, bool]:
 
 
 def foreign_email(text: str, identity: Identity) -> str | None:
-    """Return an email in `text` that is not the session customer's, else None."""
+    """Return an email in `text` that is not the session customer's, else None.
+
+    Velmo's own support/contact addresses (SUPPORT_EMAILS) are never flagged:
+    the agent legitimately surfaces those in FAQ/contact answers.
+    """
     if not identity.email:
         return None
     own = identity.email.casefold()
     for email in EMAIL_RE.findall(text):
-        if email.casefold() != own:
+        email_norm = email.casefold()
+        if email_norm != own and email_norm not in SUPPORT_EMAILS:
             return email
     return None

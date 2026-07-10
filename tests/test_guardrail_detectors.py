@@ -77,3 +77,27 @@ def test_foreign_email_flags_other_customer_only():
     assert foreign_email("on ecrit a sophie@velmo.fr", identity) == "sophie@velmo.fr"
     assert foreign_email("on ecrit a marc@velmo.fr", identity) is None
     assert foreign_email("on ecrit a sophie@velmo.fr", Identity(email=None)) is None
+
+
+def test_foreign_email_allows_velmo_support_address():
+    # Velmo's own support/contact address is not a leak, even though it isn't
+    # the session customer's own email.
+    identity = Identity(email="marc@velmo.fr")
+    assert foreign_email("contactez-nous a contact@velmo.fr", identity) is None
+    # A lookalike address on the same domain that belongs to another customer
+    # must still be flagged (this is not a blanket domain exemption).
+    assert foreign_email("on ecrit a sophie@velmo.fr", identity) == "sophie@velmo.fr"
+
+
+def test_out_of_scope_cote_does_not_match_a_cote_or_de_mon_cote():
+    # "cote" alone whole-word-matches inside "à côté" / "de mon côté" once
+    # accents are stripped ("a cote", "de mon cote") — these are extremely
+    # common, in-scope French phrases and must not be blocked.
+    assert detect_out_of_scope("à côté de chez moi, tout va bien") is None
+    assert detect_out_of_scope("de mon côté, rien reçu pour l'instant") is None
+    # The real resale-valuation intent ("la cote de mon maillot") must still
+    # be caught (eval case scope-valuation-2).
+    assert (
+        detect_out_of_scope("Quelle est la cote de mon maillot Bresil 1970 a la revente ?")
+        == "out_of_scope"
+    )

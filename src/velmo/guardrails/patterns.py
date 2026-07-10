@@ -49,7 +49,7 @@ INJECTION_TERMS: tuple[str, ...] = (
 # Out-of-scope requests (valuation, resale, investment, legal/medical, 3rd-party auth).
 OUT_OF_SCOPE_TERMS: tuple[str, ...] = (
     "combien vaut",
-    "cote",
+    "la cote",
     "revente",
     "placement",
     "bourse",
@@ -71,6 +71,21 @@ SECRET_LEAK_TERMS: tuple[str, ...] = (
     "secret de configuration",
     "secret de config",
     "configuration interne",
+)
+
+# Velmo's own outbound addresses (support/contact, as referenced in kb/docs and
+# customer-facing copy). Never a leak when they appear in an agent answer, even
+# though they are not the session customer's own email. Not a domain-wide
+# exemption: real customer emails never share these domains in production data,
+# but test fixtures use lookalike domains (e.g. other-customer @velmo.fr
+# addresses) that must still be flagged as foreign.
+SUPPORT_EMAILS: frozenset[str] = frozenset(
+    {
+        "contact@velmo.fr",
+        "support@velmo.fr",
+        "pro@velmo.example",
+        "privacy@velmo.example",
+    }
 )
 
 # Unambiguous PII numbers (operate on RAW text to keep digits/letters).
