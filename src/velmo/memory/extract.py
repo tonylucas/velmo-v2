@@ -92,7 +92,7 @@ class LangMemExtractor:
             schemas=[MemoryFact],
             instructions=ELIGIBILITY_INSTRUCTIONS,
             enable_inserts=True,
-            enable_updates=True,
+            enable_updates=True,  # inert here: we never pass `existing=`; consolidation stays in FactStore.write (FR-009)
             enable_deletes=False,
         )
 
