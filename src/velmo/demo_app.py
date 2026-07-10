@@ -50,21 +50,42 @@ SUGGESTIONS = [
 
 
 @st.cache_resource
-def build_demo_agent() -> Agent:
+def build_demo_agent() -> tuple[Agent, list[str]]:
     """Assemble a portable demo agent: seeded SQLite business data, but real
     Chroma / Azure backends when their env vars are set. Cached so the checkpointer
-    and stores survive Streamlit reruns."""
+    and stores survive Streamlit reruns.
+
+    Returns the agent plus any degradation notices: a backend can be *configured*
+    via env vars while its optional dependency is missing from this venv. get_kb /
+    get_fact_store already fall back to Local on ImportError; get_chat_model does
+    not, so we catch it here and drop to the offline model rather than crash.
+    """
     load_dotenv()
+    notices: list[str] = []
+
+    try:
+        chat_model = get_chat_model()
+    except ModuleNotFoundError:
+        from velmo.llm import OfflineChatModel
+
+        chat_model = OfflineChatModel()
+        notices.append(
+            "Azure est configuré (`AZURE_AI_INFERENCE_ENDPOINT`) mais l'extra `llm` "
+            "n'est pas installé : bascule sur le modèle hors-ligne (réponses génériques "
+            "hors des chemins déterministes). Lance `uv sync --extra llm` pour le vrai LLM."
+        )
+
     session = fresh_sqlite_session()
     seed(session)
-    return Agent(
-        chat_model=get_chat_model(),
+    agent = Agent(
+        chat_model=chat_model,
         guardrails=GuardrailEngine(),
         session=session,
         kb=get_kb(),
         checkpointer=InMemorySaver(),
         store=get_fact_store(),
     )
+    return agent, notices
 
 
 def memory_backend_label() -> str:
@@ -135,7 +156,7 @@ def render_memory_tab(agent: Agent, user_id: str) -> None:
             }
             for f in facts
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -144,7 +165,7 @@ def main() -> None:
     st.set_page_config(page_title="Velmo 2.0 — démo", page_icon="⚽", layout="wide")
     st.session_state.setdefault("history", {})
 
-    agent = build_demo_agent()
+    agent, notices = build_demo_agent()
 
     with st.sidebar:
         st.title("⚽ Velmo 2.0")
@@ -164,6 +185,8 @@ def main() -> None:
             st.caption(f"• {s}")
 
     st.header(DEMO_CUSTOMERS[user_id])
+    for notice in notices:
+        st.warning(notice, icon=":material/warning:")
     chat_tab, memory_tab = st.tabs(["💬 Chat", "🧠 Faits durables"])
     with chat_tab:
         render_chat_tab(agent, user_id)
