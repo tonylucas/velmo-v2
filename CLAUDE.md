@@ -102,14 +102,21 @@ LLM sans élaguer le state (`Agent.get_state(user_id)` restitue l'historique com
 
 ### Trois modules à construire, avec surface publique déjà figée
 
-- **Mémoire long terme (chantier 003, fait pour R2/R3/R5/R6)** : `FactStore` sur le
+- **Mémoire long terme (chantiers 003 + 003b, fait pour R2/R3/R4/R5/R6)** : `FactStore` sur le
   patron `kb_store` (`velmo.memory.fact_store.get_fact_store` : `LocalFactStore`
   hors-ligne, `ChromaFactStore` / collection `velmo_memory` en prod). Faits typés
   (`velmo.memory.facts.Fact`, sémantique vs épisodique, FR-009), trois outils
   (`velmo.tools.memory_tools` : `remember_fact`/`forget_user_data`/`inspect_user_memory`),
   recherche par tour injectée dans le `context` du graphe. Intentions d'oubli/inspection
-  routées en déterministe (FR-010). **Différé** : extraction auto LangMem/LLM, ingestion
-  « sans perte » de l'excédent (R4), async.
+  routées en déterministe (FR-010). **Différé** : async, résumé riche, LangMem stateful,
+  test Chroma.
+  L'**écriture mémoire** est branchée (chantier 003b) : à chaque tour,
+  `Agent.respond` passe le message dans `velmo.memory.extract.get_extractor()`
+  (`DeterministicExtractor` hors-ligne / `LangMemExtractor` — LangMem stateless sur
+  Kimi — en prod) et écrit les faits durables via le `FactStore`. Contrat
+  d'éligibilité : seulement des faits durables sur le client (hors-sujet → rien).
+  Couvre R4 (extraction à l'arrivée → rien de perdu au-delà des 30 messages) et
+  rend R2 automatique.
 - **`guardrails/`** (`GuardrailEngine`) : `check_input(message) -> Decision`,
   `check_output(text) -> Decision`, journalisation via `self.events`. Catégories dans `CATEGORIES`
   (hate, violence, sexual, pii, out_of_scope, prompt_injection, secret_leak). Les tests
