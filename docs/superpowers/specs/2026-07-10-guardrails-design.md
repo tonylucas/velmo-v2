@@ -178,16 +178,16 @@ flowchart TD
     LOG[("🗒️ Journal des décisions<br>catégorie · emplacement · action · horodatage")]
 
     MSG --> MOD_IN & INJ_IN & OOS_IN & SEC_IN
-    VERD_IN -- "bloc (modération / injection / hors-périmètre)" --> REFUS_IN
-    VERD_IN -- "masquage (secret)" --> MASK --> GRAPH
+    VERD_IN -- "bloc" --> REFUS_IN
+    VERD_IN -- "masquage" --> MASK --> GRAPH
     VERD_IN -- "autorisé" --> GRAPH
     GRAPH --> EXTRACT --> SEC_OUT
     VERD_OUT -- "bloc" --> REFUS_OUT
     VERD_OUT -- "autorisé" --> RESP
 
-    VERD_IN -. "bloc / masquage" .-> LOG
-    VERD_OUT -. "bloc" .-> LOG
     REFUS_IN --> LOG
+    MASK --> LOG
+    REFUS_OUT --> LOG
 ```
 
 ## 6. Découpage en module
