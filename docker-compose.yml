@@ -30,7 +30,10 @@ services:
       retries: 10
 
   chroma:
-    image: chromadb/chroma:latest
+    # Pinné pour matcher le client `chromadb>=0.5,<0.6` (pyproject.toml) : le format
+    # de réponse de l'API collections a changé entre 0.5.x et 1.x (champ `_type`),
+    # ce qui casse `get_or_create_collection` si le serveur diverge du client.
+    image: chromadb/chroma:0.5.23
     ports:
       - "8001:8000"
     volumes:
