@@ -131,19 +131,32 @@ le checkpointer. Le secret n'atteint donc jamais la mémoire court terme ni long
 
 ## 5. Flowchart
 
+Chaque catégorie a **sa** voie : un détecteur déterministe offline (toujours actif, c'est lui que
+les tests exercent), renforcé en prod par son appel Content Safety propre — la modération par
+`text:analyze`, l'injection par `text:shieldPrompt` (Prompt Shields). Les appels prod ne se
+déclenchent que si le déterministe n'a pas déjà bloqué (short-circuit).
+
 ```mermaid
 flowchart TD
     MSG["💬 Message utilisateur"]
 
-    subgraph GIN["🛡️ Garde-fou d'entrée — check_input"]
+    subgraph GIN["🛡️ Garde-fou d'entrée — check_input (déterministe d'abord, prod en renfort)"]
         direction TB
-        DET_IN["⚙️ Détecteurs déterministes (offline)<br>injection · out_of_scope · haine/violence/sexuel<br>+ secrets non ambigus (carte+Luhn, IBAN, mdp, clé)"]
-        CS_IN{"☁️ Content Safety dispo ? (env)"}
-        CS_CALL["☁️ text:analyze (modération)<br>+ text:shieldPrompt (Prompt Shields)"]
+        MOD_IN["⚙️ Modération (regex offline)<br>haine · violence · sexuel"]
+        INJ_IN["⚙️ Injection (regex offline)<br>« ignore tes instructions »…"]
+        OOS_IN["⚙️ Hors-périmètre (lexique offline)<br>valorisation · revente · juridique…"]
+        SEC_IN["⚙️ Secrets non ambigus (regex offline)<br>carte+Luhn · IBAN · mdp · clé"]
+        CS_MOD["☁️ prod : text:analyze<br>(modération, sévérité ≥ seuil)"]
+        CS_SHIELD["☁️ prod : text:shieldPrompt<br>(Prompt Shields — injection)"]
         VERD_IN{"Verdict d'entrée"}
-        DET_IN --> CS_IN
-        CS_IN -- "oui (si pas déjà bloqué)" --> CS_CALL --> VERD_IN
-        CS_IN -- "non / court-circuit" --> VERD_IN
+        MOD_IN -. "si dispo & pas déjà bloqué" .-> CS_MOD
+        INJ_IN -. "si dispo & pas déjà bloqué" .-> CS_SHIELD
+        MOD_IN --> VERD_IN
+        CS_MOD --> VERD_IN
+        INJ_IN --> VERD_IN
+        CS_SHIELD --> VERD_IN
+        OOS_IN --> VERD_IN
+        SEC_IN --> VERD_IN
     end
 
     REFUS_IN["💬 Refus poli (Decision.refusal)"]
@@ -155,7 +168,7 @@ flowchart TD
     subgraph GOUT["🛡️ Garde-fou de sortie — check_output(identity)"]
         direction TB
         SEC_OUT["⚙️ Secrets non ambigus (regex)<br>+ email tiers ∉ identité session (identité-aware)"]
-        MOD_OUT["⚙️ Modération déterministe<br>+ Content Safety text:analyze (si dispo)"]
+        MOD_OUT["⚙️ Modération : regex offline<br>+ text:analyze en prod (si dispo)"]
         VERD_OUT{"Verdict de sortie"}
         SEC_OUT --> MOD_OUT --> VERD_OUT
     end
@@ -164,9 +177,9 @@ flowchart TD
     RESP["💬 Réponse → utilisateur"]
     LOG[("🗒️ events<br>catégorie · emplacement · action · horodatage")]
 
-    MSG --> DET_IN
-    VERD_IN -- "block" --> REFUS_IN
-    VERD_IN -- "mask" --> MASK --> GRAPH
+    MSG --> MOD_IN & INJ_IN & OOS_IN & SEC_IN
+    VERD_IN -- "block (modération/injection/hors-périmètre)" --> REFUS_IN
+    VERD_IN -- "mask (secret)" --> MASK --> GRAPH
     VERD_IN -- "allow" --> GRAPH
     GRAPH --> EXTRACT --> SEC_OUT
     VERD_OUT -- "block" --> REFUS_OUT
