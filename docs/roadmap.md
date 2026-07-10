@@ -11,6 +11,6 @@ Légende statut : ✅ fait · ⏳ en cours · 📝 spec/design seul(e) · ⬜ à
 | **002** | Mémoire court terme | Fil de conversation (checkpointer LangGraph), fenêtre glissante 30 messages | ✅ | ✅ | ✅ | ✅ |
 | **003** | Mémoire long terme & RGPD | Faits durables sémantiques + épisodiques (`FactStore` Chroma/local), droit à l'oubli, traçabilité | ✅ | ✅ | ✅ | ✅ |
 | **003b** | Mémoire long terme — écriture auto | Extraction automatique des faits par tour (R4 sans perte, R2 automatique), extracteur LangMem en prod | ✅ | ✅ | ✅ | ✅ |
-| **004** | Sécurité & Garde-fous | Garde-fous entrée/sortie, catégories bloquées, anti-injection, journalisation & escalade | ⬜ | ⬜ | ⬜ | ⬜ *(stub `GuardrailEngine`)* |
+| **004** | Sécurité & Garde-fous | Garde-fous entrée/sortie déterministes hors-ligne + surcouche prod Content Safety (modération, anti-injection), masquage PII entrée, blocage identité-aware sortie, journalisation | ✅ | ✅ | ✅ | ✅ |
 | **005** | Évaluation automatisée | Suites d'éval **headless** (mémoire, garde-fous, qualité) contre le pipeline, sans dépendre de l'API | 📝 *(design `boucle-qualite.md`, spec.md à écrire)* | ⬜ | ⬜ | ⬜ *(`eval/*.jsonl` déjà présents)* |
 | **006** | Pipeline MLOps | CI `quality.yml` (seuil bloquant), versionnage prompt/config, `mlops/report.md` par version | ⬜ | ⬜ | ⬜ | ⬜ |
