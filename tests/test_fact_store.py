@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from velmo.memory.facts import Fact
-from velmo.memory.fact_store import LocalFactStore, episodic_storage_key, get_fact_store, semantic_storage_key
+from velmo.memory.fact_store import (
+    LocalFactStore,
+    episodic_storage_key,
+    get_fact_store,
+    semantic_storage_key,
+)
 
 
 def _write(store, user_id, fact_type, key, content):
