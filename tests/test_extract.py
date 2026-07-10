@@ -8,7 +8,7 @@ from velmo.memory.extract import DeterministicExtractor
 
 
 def _facts(text: str):
-    return DeterministicExtractor("u1").extract([HumanMessage(content=text)])
+    return DeterministicExtractor().extract("u1", [HumanMessage(content=text)])
 
 
 def test_extracts_order_number_as_episodic():
@@ -28,8 +28,21 @@ def test_extracts_pro_status_as_profile():
     assert profiles and "pro" in profiles[0].content.lower()
 
 
-def test_no_facts_returns_empty():
-    assert _facts("Bonjour, merci beaucoup !") == []
+def test_extracts_pointure_as_profile():
+    for text in ("Je chausse du L.", "Je fais du XL.", "Ma pointure est M."):
+        facts = _facts(text)
+        pointures = [f for f in facts if f.fact_type == "profile" and f.key == "pointure"]
+        assert pointures, f"no pointure extracted from {text!r}"
+
+
+def test_off_topic_message_extracts_nothing():
+    # Selectivity contract: no durable fact -> empty.
+    assert _facts("Il fait beau aujourd'hui, merci !") == []
+
+
+def test_facts_are_bound_to_the_given_user():
+    facts = _facts("Tu peux me tutoyer.")
+    assert facts and all(f.user_id == "u1" for f in facts)
 
 
 def test_source_is_extractor():
