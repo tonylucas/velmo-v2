@@ -1,6 +1,6 @@
-"""Tests d'acceptance — mémoire long terme (chantier 003).
+"""Tests d'acceptance — mémoire long terme (chantiers 003 + 003b).
 
-R1 (fil court terme) reste couvert via le checkpointer. R2/R3/R5/R6 s'appuient
+R1 (fil court terme) reste couvert via le checkpointer. R2/R3/R4/R5/R6 s'appuient
 sur le FactStore : on pilote le vrai agent et on assère sur le stocké
 (`Agent.inspect_memory`) ou sur la réponse déterministe (oubli/inspection), jamais
 sur l'écho du modèle offline. Tout tourne sur `LocalFactStore`, sans Docker.
