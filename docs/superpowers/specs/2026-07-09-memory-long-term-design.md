@@ -310,3 +310,81 @@ sequenceDiagram
         Agent->>User: Résumé lisible
     end
 ```
+
+## 10. Flowchart mémoire (lecture / écriture par tour)
+
+> Reprend le flowchart initial de conception, corrigé pour matcher ce qui a été
+> réellement implémenté (003 + 003b). Cinq écarts par rapport au brouillon :
+> 1. **Pas d'« extrait épisodique brut »** : R4 extrait des **faits structurés**
+>    (`order_info`/`dispute`/`preference`/`profile`) à chaque tour — jamais un
+>    chunk brut de conversation stocké tel quel.
+> 2. **Pas de seuil « fenêtre > 30 messages »** : l'écriture mémoire tourne à
+>    chaque tour, de façon inconditionnelle et synchrone — indépendamment de la
+>    taille de la fenêtre (voir design 003b, §2).
+> 3. **Aucune purge du checkpoint** (pas de `RemoveMessage`) : le checkpointer
+>    garde l'historique complet pour toujours ; seule la fenêtre envoyée au LLM
+>    est bornée (*soft window*, `window_messages`).
+> 4. **Une seule interface de recherche** (`FactStore.search`), pas deux
+>    mécanismes distincts « lecture exacte » vs « similarité » : hors-ligne c'est
+>    un tri par récence pour les deux groupes de faits, en prod (Chroma) c'est une
+>    requête par embeddings pour les deux ; seul le filtre `fact_types` diffère
+>    (sémantique vs épisodique).
+> 5. **Ajout du fork déterministe/LLM** (`routing.run_deterministic`), absent du
+>    brouillon initial mais réellement la première branche du pipeline : la
+>    majorité des tours n'atteignent jamais le LLM.
+
+```mermaid
+flowchart TD
+    MSG["💬 Message utilisateur"]
+    GATE_IN{"🛡️ Garde-fou d'entrée ?<br>(stub, chantier 004)"}
+    REFUS_IN["💬 Réponse de refus"]
+
+    subgraph READ["🔍 Lecture mémoire (avant tout traitement)"]
+        direction LR
+        SEM["🎯 FactStore.search(user_id, message, fact_types=SEMANTIC)<br>LocalFactStore (hors-ligne) / ChromaFactStore (prod)<br>→ jusqu'à k=5 faits sémantiques, triés par récence<br>preference/profile — toujours conservés (R2/R3)"]
+        EPI["🔎 FactStore.search(user_id, message, fact_types=EPISODIC)<br>→ jusqu'à k=5 faits épisodiques récents<br>order_info/dispute (R2/R3)"]
+    end
+
+    CTX["📝 Faits rendus injectés dans le system prompt<br>(« Mémoire: … »)"]
+    HIST["🗄️ Checkpointer LangGraph<br>PostgresSaver (prod, sync) / InMemorySaver (hors-ligne)<br>→ historique de la session, thread_id = user_id<br>(mémoire court terme — R1)"]
+
+    ROUTE{"🔀 Intention déterministe reconnue ?<br>(commande, stock, FAQ, oubli, inspection)"}
+    DET["⚙️ Outil métier appelé directement<br>sans LLM"]
+    WINDOW["🪟 Fenêtre glissante : 30 derniers messages<br>(soft window — rien n'est purgé du checkpoint)"]
+    LLM["🤖 LLM (ReAct, outillé)<br>system prompt (mémoire + contexte) + historique fenêtré"]
+
+    SAVE["🗄️ Checkpointer persiste automatiquement<br>le nouveau state (messages + status) — R1"]
+
+    EXTRACT["🧠 Extractor.extract(user_id, [message])<br>DeterministicExtractor (regex, hors-ligne) /<br>LangMemExtractor (LLM, prod)<br>sélectif : hors-sujet → rien (contrat d'éligibilité)"]
+    HASFACTS{"Faits durables détectés ?"}
+
+    subgraph WRITE["✍️ Écriture mémoire (chaque tour, synchrone — R4)"]
+        direction TB
+        WRITELOOP["🗄️ Pour chaque fait : FactStore.write(fact)"]
+        CONSOL["🔁 Consolidation FR-009<br>sémantique : remplace sur (fact_type, key)<br>épisodique : dédup par hash du contenu"]
+        WRITELOOP --> CONSOL
+    end
+
+    GATE_OUT{"🛡️ Garde-fou de sortie ?<br>(stub, chantier 004)"}
+    REFUS_OUT["💬 Réponse de refus"]
+    RESP["💬 Réponse agent → utilisateur"]
+    FIN(["✅ Fin du tour"])
+
+    MSG --> GATE_IN
+    GATE_IN -- "refusé" --> REFUS_IN --> FIN
+    GATE_IN -- "ok" --> SEM
+    GATE_IN -- "ok" --> EPI
+    SEM --> CTX
+    EPI --> CTX
+    CTX --> HIST --> ROUTE
+    ROUTE -- "oui" --> DET
+    ROUTE -- "non" --> WINDOW --> LLM
+    DET --> SAVE
+    LLM --> SAVE
+    SAVE --> EXTRACT --> HASFACTS
+    HASFACTS -- "non" --> GATE_OUT
+    HASFACTS -- "oui" --> WRITELOOP
+    CONSOL --> GATE_OUT
+    GATE_OUT -- "ok" --> RESP --> FIN
+    GATE_OUT -- "refusé" --> REFUS_OUT --> FIN
+```
