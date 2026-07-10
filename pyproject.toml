@@ -25,9 +25,11 @@ llm = [
     "azure-ai-inference>=1.0.0b9",
     "langmem>=0.0.1,<0.1",
 ]
-# Interface de démonstration web (chat + garde-fous + mémoire).
+# Interface de démonstration web (chat + garde-fous + mémoire), câblée sur la
+# stack prod. Tire les backends réels (Chroma, Azure) + le checkpointer Postgres.
 demo = [
     "streamlit>=1.30,<2",
+    "langgraph-checkpoint-postgres>=2,<3",
 ]
 
 [dependency-groups]

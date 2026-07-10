@@ -1,12 +1,19 @@
-"""Streamlit demo UI for the Velmo 2.0 support agent.
+"""Streamlit demo UI for the Velmo 2.0 support agent — wired to the production stack.
 
-Portable by default: seeded in-memory SQLite business data + offline chat model +
-deterministic guardrails, so it runs with no Docker and no credentials. If
-``CHROMA_URL`` / ``AZURE_AI_INFERENCE_ENDPOINT`` are set, the long-term memory and
-chat model automatically upgrade to the real Chroma / Azure backends — that is
-what makes the "durable facts" tab show the actual ``velmo_memory`` collection.
+This is not an offline demo: it drives the real ``build_default_agent()`` —
+PostgreSQL business data, the Azure (Kimi) chat model, the Chroma ``velmo_memory``
+long-term memory and ``velmo_faq`` FAQ, and the Postgres short-term checkpointer.
+The "durable facts" tab therefore shows exactly what lives in the Chroma
+``velmo_memory`` collection for the selected customer.
 
-Run with: ``make demo`` (``uv run --extra demo streamlit run src/velmo/demo_app.py``).
+Prerequisites (run once):
+    make up            # docker: postgres + chroma
+    make migrate       # alembic upgrade head
+    make seed          # postgres business data (catalogue, clients, commandes)
+    make seed-kb       # chroma FAQ (velmo_faq)
+and a ``.env`` with DB_URL, CHROMA_URL, AZURE_AI_INFERENCE_ENDPOINT / _API_KEY.
+
+Run with: ``make demo``.
 """
 
 from __future__ import annotations
@@ -15,31 +22,12 @@ import os
 
 import streamlit as st
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import InMemorySaver
+from sqlalchemy import select
 
-from velmo.agent import Agent
-from velmo.db import fresh_sqlite_session
-from velmo.guardrails import Decision, GuardrailEngine
-from velmo.kb_store import get_kb
-from velmo.llm import get_chat_model
-from velmo.memory.fact_store import get_fact_store
-from velmo.sampledata import seed
+from velmo.agent import Agent, build_default_agent
+from velmo.db import Customer
+from velmo.guardrails import Decision
 
-# Seeded customers (see velmo.sampledata). id -> display label.
-DEMO_CUSTOMERS: dict[str, str] = {
-    "C-marc-dubois": "Marc Dubois (revendeur)",
-    "C-sophie-martin": "Sophie Martin (particulier)",
-    "C-karim-benali": "Karim Benali (pro)",
-    "C-lucie-bernard": "Lucie Bernard (particulier)",
-    "C-thomas-petit": "Thomas Petit (revendeur)",
-    "C-emma-roux": "Emma Roux (particulier)",
-    "C-hugo-moreau": "Hugo Moreau (particulier)",
-    "C-ines-garcia": "Inès Garcia (pro)",
-    "C-paul-laurent": "Paul Laurent (particulier)",
-    "C-nadia-haddad": "Nadia Haddad (revendeur)",
-}
-
-# Suggestions to drive the demo (each exercises one guardrail / memory path).
 SUGGESTIONS = [
     "Quel est le statut de ma commande O-2024-0101 ?",
     "Tu peux me tutoyer, je fais du L.",
@@ -48,56 +36,43 @@ SUGGESTIONS = [
     "Combien vaut mon maillot Maradona 86 aujourd'hui ?",
 ]
 
+PREREQ_HELP = (
+    "Impossible de joindre la stack prod. Vérifie, dans l'ordre :\n\n"
+    "1. `make up` — Postgres + Chroma démarrés (docker)\n"
+    "2. `make migrate && make seed && make seed-kb`\n"
+    "3. `.env` : `DB_URL`, `CHROMA_URL`, `AZURE_AI_INFERENCE_ENDPOINT`, "
+    "`AZURE_AI_INFERENCE_API_KEY`\n"
+    "4. extras installés : `uv sync --extra demo --extra llm --extra vector`"
+)
+
 
 @st.cache_resource
-def build_demo_agent() -> tuple[Agent, list[str]]:
-    """Assemble a portable demo agent: seeded SQLite business data, but real
-    Chroma / Azure backends when their env vars are set. Cached so the checkpointer
-    and stores survive Streamlit reruns.
+def build_prod_agent() -> Agent:
+    """Assemble the real production agent (Postgres + Chroma + Azure), cached so the
+    DB/Chroma connections and the checkpointer survive Streamlit reruns.
 
-    Returns the agent plus any degradation notices: a backend can be *configured*
-    via env vars while its optional dependency is missing from this venv. get_kb /
-    get_fact_store already fall back to Local on ImportError; get_chat_model does
-    not, so we catch it here and drop to the offline model rather than crash.
-    """
+    Construction touches every backend (Chroma ``get_or_create_collection``, the
+    Postgres checkpointer ``setup()``), so a failure here means a backend is down —
+    surfaced by the preflight in ``main`` rather than swallowed."""
     load_dotenv()
-    notices: list[str] = []
-
-    try:
-        chat_model = get_chat_model()
-    except ModuleNotFoundError:
-        from velmo.llm import OfflineChatModel
-
-        chat_model = OfflineChatModel()
-        notices.append(
-            "Azure est configuré (`AZURE_AI_INFERENCE_ENDPOINT`) mais l'extra `llm` "
-            "n'est pas installé : bascule sur le modèle hors-ligne (réponses génériques "
-            "hors des chemins déterministes). Lance `uv sync --extra llm` pour le vrai LLM."
-        )
-
-    session = fresh_sqlite_session()
-    seed(session)
-    agent = Agent(
-        chat_model=chat_model,
-        guardrails=GuardrailEngine(),
-        session=session,
-        kb=get_kb(),
-        checkpointer=InMemorySaver(),
-        store=get_fact_store(),
-    )
-    return agent, notices
+    return build_default_agent()
 
 
-def memory_backend_label() -> str:
-    """Human-readable name of the active long-term memory backend."""
-    if os.getenv("CHROMA_URL"):
-        try:
-            import chromadb  # noqa: F401
+def load_customers(agent: Agent) -> dict[str, str]:
+    """Read the real customers from Postgres for the picker (id -> label)."""
+    rows = agent.session.scalars(select(Customer).order_by(Customer.id)).all()
+    return {c.id: f"{c.full_name} ({c.segment.value})" for c in rows}
 
-            return "Chroma — collection `velmo_memory`"
-        except ImportError:
-            pass
-    return "Local (en mémoire, hors-ligne)"
+
+def backend_summary() -> list[str]:
+    """One line per prod backend, read from the environment."""
+    db = os.getenv("DB_URL", "—").rsplit("@", 1)[-1]
+    return [
+        f":material/database: Postgres — `{db}`",
+        f":material/hub: Chroma — `{os.getenv('CHROMA_URL', '—')}` (`velmo_memory`, `velmo_faq`)",
+        f":material/smart_toy: LLM — `{os.getenv('AZURE_AI_INFERENCE_MODEL', 'Kimi-K2.6')}` "
+        "(Azure AI Inference)",
+    ]
 
 
 def _badge(decision: Decision) -> tuple[str, str] | None:
@@ -137,12 +112,14 @@ def render_chat_tab(agent: Agent, user_id: str) -> None:
 
 
 def render_memory_tab(agent: Agent, user_id: str) -> None:
-    st.caption(f"Backend mémoire long terme : {memory_backend_label()}")
+    backend = type(agent.store).__name__
+    st.caption(f"Backend mémoire long terme : `{backend}` — collection Chroma `velmo_memory`")
     facts = agent.inspect_memory(user_id)
     if not facts:
         st.info(
-            "Aucun fait durable retenu pour ce client. Dis-en un dans le chat "
-            "(« tu peux me tutoyer », « je fais du L »…) et reviens ici."
+            "Aucun fait durable en base pour ce client. Énonce-en un dans le chat "
+            "(« tu peux me tutoyer », « je fais du L »…) : il est extrait et écrit dans "
+            "Chroma, puis visible ici — et à la prochaine session."
         )
         return
     st.dataframe(
@@ -165,29 +142,40 @@ def main() -> None:
     st.set_page_config(page_title="Velmo 2.0 — démo", page_icon="⚽", layout="wide")
     st.session_state.setdefault("history", {})
 
-    agent, notices = build_demo_agent()
+    try:
+        agent = build_prod_agent()
+        customers = load_customers(agent)
+    except Exception as exc:  # backend down / misconfigured — show how to fix, don't crash
+        st.error(PREREQ_HELP)
+        st.exception(exc)
+        st.stop()
+
+    if not customers:
+        st.error("Base joignable mais aucun client. Lance `make seed`.")
+        st.stop()
 
     with st.sidebar:
         st.title("⚽ Velmo 2.0")
-        st.caption("Démo — chat, garde-fous, mémoire long terme")
+        st.caption("Démo prod — chat, garde-fous, mémoire long terme")
         user_id = st.selectbox(
             "Client authentifié",
-            options=list(DEMO_CUSTOMERS),
-            format_func=lambda uid: DEMO_CUSTOMERS[uid],
+            options=list(customers),
+            format_func=lambda uid: customers[uid],
         )
         st.caption(f"`{user_id}` — l'isolation (R3) repose sur cet identifiant.")
         if st.button("↺ Réinitialiser la conversation affichée"):
             st.session_state.history[user_id] = []
             st.rerun()
+        with st.expander("Backends (prod)"):
+            for line in backend_summary():
+                st.markdown(line)
         st.divider()
         st.markdown("**Essais suggérés**")
-        for s in SUGGESTIONS:
-            st.caption(f"• {s}")
+        for suggestion in SUGGESTIONS:
+            st.caption(f"• {suggestion}")
 
-    st.header(DEMO_CUSTOMERS[user_id])
-    for notice in notices:
-        st.warning(notice, icon=":material/warning:")
-    chat_tab, memory_tab = st.tabs(["💬 Chat", "🧠 Faits durables"])
+    st.header(customers[user_id])
+    chat_tab, memory_tab = st.tabs(["💬 Chat", "🧠 Faits durables (Chroma)"])
     with chat_tab:
         render_chat_tab(agent, user_id)
     with memory_tab:

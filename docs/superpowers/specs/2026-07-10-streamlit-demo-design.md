@@ -13,36 +13,45 @@ garde-fous (blocage / masquage), et les faits durables retenus en mémoire long 
 Hors périmètre : authentification réelle, multi-session concurrente, déploiement. C'est un
 harnais de démo local lancé par `make demo`.
 
-## 2. Portabilité — agent hybride
+## 2. Câblage prod (pas de mode hors-ligne)
 
-Par défaut, l'app doit tourner **sans Docker ni credential** (pour être projetable partout) :
+La démo pilote la **vraie stack de production** via `build_default_agent()` — c'est l'exigence :
+les faits durables affichés doivent être exactement ce qui vit dans Chroma.
 
-- **Données métier** : `fresh_sqlite_session()` + `seed()` — le vrai catalogue, les clients et
-  les ~14 commandes d'exemple, en SQLite mémoire. Toujours, quelle que soit la config.
-- **Mémoire long terme** : `get_fact_store()` — bascule automatiquement sur `ChromaFactStore`
-  (collection `velmo_memory`) si `CHROMA_URL` est défini et `chromadb` importable, sinon
-  `LocalFactStore`. C'est ce qui permet à l'onglet « Faits durables » d'afficher le contenu réel
-  de Chroma quand `docker compose up` tourne.
-- **FAQ** : `get_kb()` (Chroma `velmo_faq` si configuré, sinon `LocalKB`).
-- **Modèle de chat** : `get_chat_model()` (Azure Kimi si `AZURE_AI_INFERENCE_ENDPOINT`, sinon
-  `OfflineChatModel`).
-- **Mémoire court terme** : `InMemorySaver` explicite (le fil de conversation vit dans le process
-  Streamlit, réinitialisé au redémarrage — suffisant pour une démo ; la persistance long terme,
-  elle, passe par le `FactStore`).
-- **Garde-fous** : `GuardrailEngine()` (déterministe, toujours actif hors-ligne).
+- **Données métier** : session PostgreSQL (`session_factory()`), le sélecteur de clients lit les
+  **vrais clients** de la base.
+- **Mémoire long terme** : `ChromaFactStore` (collection `velmo_memory`) via `get_fact_store()` +
+  `CHROMA_URL`. L'onglet « Faits durables » lit `inspect_memory(user)` → contenu réel de la
+  collection, filtré par `user_id`.
+- **FAQ** : `ChromaKB` (collection `velmo_faq`) via `get_kb()`.
+- **Modèle de chat** : Azure Kimi (`get_chat_model()`).
+- **Mémoire court terme** : `PostgresSaver` (`get_checkpointer()` + `DB_URL`) — d'où l'ajout de
+  l'extra `langgraph-checkpoint-postgres` au groupe `demo`.
+- **Garde-fous** : `GuardrailEngine()` (déterministe).
 
-Une seule instance d'`Agent` sert tous les clients : l'isolation repose sur `user_id`
-(checkpointer keyé par `thread_id = user_id`, `FactStore` filtré par `user_id`), exactement comme
-en prod. L'agent est mis en cache via `st.cache_resource` pour survivre aux reruns Streamlit.
+Une seule instance d'`Agent` (cachée par `st.cache_resource`) sert tous les clients ; l'isolation
+repose sur `user_id` (checkpointer keyé par `thread_id`, `FactStore`/business filtrés par
+`user_id`).
+
+**Pas de bascule hors-ligne** : si un backend est absent/injoignable, un **préflight** dans `main`
+attrape l'exception à la construction (Chroma `get_or_create_collection`, `setup()` du checkpointer,
+requête clients Postgres) et affiche un message d'aide listant les prérequis (`make up`,
+`make migrate`, `make seed`, `make seed-kb`, `.env`, extras) au lieu de retomber silencieusement
+sur du local — ce serait contraire à l'objectif (montrer la vraie mémoire Chroma).
+
+**Prérequis** (une fois) : `make up` (Postgres + Chroma), `make migrate`, `make seed`,
+`make seed-kb`, et un `.env` avec `DB_URL` / `CHROMA_URL` / `AZURE_AI_INFERENCE_*`. Lancement :
+`make demo` (`uv run --extra demo --extra llm --extra vector streamlit run …`).
 
 ## 3. Disposition (deux onglets + barre latérale)
 
 **Barre latérale** :
-- Sélecteur de **client** (liste des 10 clients seedés, ex. `C-marc-dubois`). Changer de client
-  démontre l'isolation R3 en un clic.
+- Sélecteur de **client** (les vrais clients lus depuis Postgres). Changer de client démontre
+  l'isolation R3 en un clic.
 - Bouton « Réinitialiser la conversation affichée » (vide l'historique d'affichage du client
   courant ; ne touche pas la mémoire long terme).
-- Badge indiquant le **backend mémoire actif** : « Chroma (velmo_memory) » ou « Local ».
+- Panneau « Backends (prod) » : Postgres (hôte), Chroma (`velmo_memory` / `velmo_faq`), LLM Azure —
+  pour confirmer le câblage prod d'un coup d'œil.
 
 **Onglet 1 — Chat** :
 - `st.chat_message` / `st.chat_input`, historique d'affichage dans `st.session_state`, keyé par
@@ -54,30 +63,30 @@ en prod. L'agent est mis en cache via `st.cache_resource` pour survivre aux reru
   - **masqué** → badge ambre « Secret masqué », affiche le message caviardé réellement transmis.
   - **autorisé** → conversation normale.
 
-**Onglet 2 — Faits durables (mémoire long terme)** :
-- Badge du backend actif (Chroma `velmo_memory` vs Local).
+**Onglet 2 — Faits durables (Chroma)** :
+- Backend affiché (`ChromaFactStore` — collection `velmo_memory`).
 - Table des `Fact` du client courant, lue via `agent.inspect_memory(user_id)` : colonnes
-  `fact_type`, `key`, `content`, `created_at`, `source`. Quand Chroma est actif, c'est
-  littéralement le contenu de la collection `velmo_memory` filtré par `user_id` (isolation R3
-  visible : changer de client change la table, aucun fait d'un autre client n'apparaît).
-- Message clair si la mémoire est vide pour ce client.
+  `fact_type`, `key`, `content`, `created_at`, `source`. C'est **littéralement** le contenu de la
+  collection `velmo_memory` filtré par `user_id` (isolation R3 visible : changer de client change
+  la table, aucun fait d'un autre client n'apparaît).
+- Message clair si la mémoire est vide pour ce client (elle se remplit à mesure que les faits sont
+  extraits et écrits dans Chroma).
 
 ## 4. Ce que ça touche côté code
 
-- **Créé** : `src/velmo/demo_app.py` (toute l'UI + assemblage de l'agent hybride).
-- **Modifié** : `pyproject.toml` — nouvel extra optionnel `demo = ["streamlit>=1.30,<2"]`
+- **Créé** : `src/velmo/demo_app.py` (UI + préflight + assemblage via `build_default_agent()`).
+- **Modifié** : `pyproject.toml` — extra `demo = ["streamlit…", "langgraph-checkpoint-postgres…"]`
   (hors dépendances cœur). `Makefile` — cible `demo:` lançant
-  `uv run --extra demo streamlit run src/velmo/demo_app.py`.
+  `uv run --extra demo --extra llm --extra vector streamlit run src/velmo/demo_app.py`.
 - **Aucun changement** dans `guardrails/`, `agent.py`, `memory/`, `db.py` : l'app consomme la
-  surface publique existante (`respond`, `inspect_memory`, `guardrails.check_input`,
-  `get_fact_store`, `get_kb`, `get_chat_model`).
+  surface publique existante (`build_default_agent`, `respond`, `inspect_memory`,
+  `guardrails.check_input`, `Customer`).
 
 ## 5. Différé / hors périmètre
 
 - Badges de blocage **en sortie** : `respond` ne renvoie que le texte final (déjà neutralisé) ;
-  le détail du blocage de sortie (identité-aware) n'est pas exposé. Les blocages de sortie sont
-  rares hors-ligne ; on montre uniquement les décisions d'**entrée** (bloc / masquage), qui sont
-  les plus démonstratives.
+  le détail du blocage de sortie (identité-aware) n'est pas exposé. On montre uniquement les
+  décisions d'**entrée** (bloc / masquage), les plus démonstratives.
 - Visualisation du journal des garde-fous (`events`) : dépend de la persistance en DB, brainstorming
   reporté.
 - Édition/suppression manuelle de faits depuis l'UI : le droit à l'oubli (R5) se démontre déjà
@@ -85,8 +94,10 @@ en prod. L'agent est mis en cache via `st.cache_resource` pour survivre aux reru
 
 ## 6. Stratégie de test
 
-Outil de démo : pas de suite d'acceptance dédiée. Vérification : `uv run python -c "import
-velmo.demo_app"` (l'import ne doit pas planter — pas d'appel Streamlit au niveau module au-delà
-des `st.*` d'UI, l'assemblage de l'agent est dans une fonction cachée), et lancement manuel de
-`make demo`. La logique métier sous-jacente (agent, garde-fous, mémoire) est déjà couverte par les
-suites des chantiers 001-004.
+Outil de démo : pas de suite d'acceptance dédiée. Vérifications faites : `import velmo.demo_app`
+ne plante pas (le corps de l'UI est sous `if __name__ == "__main__"`), `ruff check`/`format`
+propres, et démarrage headless — y compris **sans backends** pour confirmer que le préflight rend
+le message d'aide (`st.error` + `st.stop`) au lieu de crasher. La logique métier sous-jacente
+(agent, garde-fous, mémoire) est déjà couverte par les suites des chantiers 001-004. Le chemin
+prod complet (Postgres + Chroma + Azure joignables) se valide en lançant `make demo` avec les
+services up.
