@@ -219,3 +219,172 @@ checkpointer, elle ne le modifie pas.
 - **Cycle de vie du backend Chroma en prod.** Collection `velmo_memory` distincte de
   la FAQ (`velmo_faq`) ; client/collection créés paresseusement et réutilisés. Non
   exercé hors-ligne.
+
+## 9. Schéma de séquence
+
+> Reprend le schéma initial de conception, ajusté à ce qui a été réellement
+> implémenté (003 + 003b). Trois écarts majeurs par rapport à la version de
+> conception :
+> 1. **Pas de traitement par seuil/async** : l'extraction tourne **à chaque
+>    tour**, sur le message entrant, de façon **synchrone** — pas de lot
+>    d'excédent différé (voir le design 003b, §2 : « R4 et auto-extraction sont
+>    le même mécanisme »).
+> 2. **Pas d'appel explicite à un Embedding Model** côté agent : la recherche
+>    hors-ligne (`LocalFactStore`) est lexicale (récence + filtre `fact_type`) ;
+>    en prod (`ChromaFactStore`), l'embedding est interne à l'appel Chroma, pas
+>    une étape séparée orchestrée par l'agent.
+> 3. **L'inspection (R6) ne passe pas par le LLM** : `inspect_user_memory` rend
+>    les faits en texte par un formateur déterministe (`render_facts`), routé
+>    dans le nœud déterministe — pas de résumé LLM (cohérent avec FR-010 : les
+>    intentions mémoire évitent le LLM quand c'est possible).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Agent
+    participant Checkpointer as Checkpointer<br>(court terme, thread_id = user_id)
+    participant FactStore as FactStore<br>(long terme : Local ou Chroma)
+    participant LLM
+    participant Extractor as Extractor<br>(Deterministic offline / LangMem prod)
+
+    User->>Agent: Envoie un message
+
+    Note over Agent: Process stateless :<br>rien n'est conservé en RAM entre deux tours
+
+    Agent->>Agent: Garde-fou d'entrée (check_input — stub, chantier 004)
+
+    Agent->>FactStore: search(user_id, message, fact_types=SEMANTIC)
+    FactStore-->>Agent: Faits sémantiques (préférences/profil — toujours conservés)
+    Agent->>FactStore: search(user_id, message, fact_types=EPISODIC)
+    FactStore-->>Agent: Faits épisodiques récents (commandes/litiges)
+    Note over Agent,FactStore: Deux recherches séparées (select_memory) : le volume<br>épisodique n'évince jamais les faits durables (fix R2, 003b)
+
+    Agent->>Agent: Injecte les faits rendus dans context ("Mémoire: ...")
+
+    Agent->>Checkpointer: graph.invoke(nouveau message, thread_id=user_id)
+    Checkpointer-->>Agent: Historique chargé (vide si 1er tour)
+
+    alt Intention déterministe reconnue (commande, stock, FAQ, oubli, inspection)
+        Agent->>Agent: routing.run_deterministic — outil métier, sans LLM
+    else Aucune intention déterministe
+        Agent->>Agent: Fenêtre glissante (30 derniers messages, soft window)
+        Agent->>LLM: system prompt (faits + contexte) + historique fenêtré + outils
+        LLM-->>Agent: Réponse générée (+ éventuels appels d'outils mémoire)
+    end
+
+    Checkpointer->>Checkpointer: Persiste automatiquement le nouveau state<br>(messages + status, géré par LangGraph)
+
+    Agent->>Extractor: extract(user_id, [message utilisateur])
+    Extractor-->>Agent: Faits durables détectés (liste vide si hors-sujet)
+    Note over Agent,Extractor: Contrat d'éligibilité : durable sur le client,<br>4 fact_type, sinon rien (testé hors-ligne)
+
+    loop Pour chaque fait extrait
+        Agent->>FactStore: write(fact)
+        FactStore->>FactStore: Consolidation FR-009<br>(remplace sémantique / dédup épisodique par hash contenu)
+    end
+    Note over Agent,FactStore: Écriture synchrone, à chaque tour — R4 « sans perte »<br>par construction (rien n'attend l'overflow)
+
+    Agent->>Agent: Garde-fou de sortie (check_output — stub, chantier 004)
+
+    Agent->>User: Renvoie la réponse
+
+    Note over Agent,Checkpointer: Aucun état conservé en RAM après la réponse :<br>le prochain tour relira depuis Checkpointer + FactStore
+
+    opt Demande de droit à l'oubli (R5)
+        User->>Agent: "Oublie mon adresse"
+        Agent->>Agent: Routage déterministe reconnaît l'intention<br>(FR-010 : jamais le LLM)
+        Agent->>User: Demande confirmation (gabarit déterministe,<br>"... irréversible ... répondez « je confirme »")
+        User->>Agent: "Oublie mon adresse, je confirme"
+        Agent->>FactStore: delete(user_id, target)
+        FactStore-->>Agent: Nombre de faits supprimés
+        Agent->>User: Confirmation ("c'est fait, N élément(s) supprimé(s)")
+    end
+
+    opt Demande d'inspection (traçabilité, R6)
+        User->>Agent: "Que sais-tu de moi ?"
+        Agent->>Agent: Routage déterministe reconnaît l'intention
+        Agent->>FactStore: all(user_id)
+        FactStore-->>Agent: Liste des faits actifs
+        Agent->>Agent: Rendu texte déterministe (render_facts, pas de LLM)
+        Agent->>User: Résumé lisible
+    end
+```
+
+## 10. Flowchart mémoire (lecture / écriture par tour)
+
+> Reprend le flowchart initial de conception, corrigé pour matcher ce qui a été
+> réellement implémenté (003 + 003b). Cinq écarts par rapport au brouillon :
+> 1. **Pas d'« extrait épisodique brut »** : R4 extrait des **faits structurés**
+>    (`order_info`/`dispute`/`preference`/`profile`) à chaque tour — jamais un
+>    chunk brut de conversation stocké tel quel.
+> 2. **Pas de seuil « fenêtre > 30 messages »** : l'écriture mémoire tourne à
+>    chaque tour, de façon inconditionnelle et synchrone — indépendamment de la
+>    taille de la fenêtre (voir design 003b, §2).
+> 3. **Aucune purge du checkpoint** (pas de `RemoveMessage`) : le checkpointer
+>    garde l'historique complet pour toujours ; seule la fenêtre envoyée au LLM
+>    est bornée (*soft window*, `window_messages`).
+> 4. **Une seule interface de recherche** (`FactStore.search`), pas deux
+>    mécanismes distincts « lecture exacte » vs « similarité » : hors-ligne c'est
+>    un tri par récence pour les deux groupes de faits, en prod (Chroma) c'est une
+>    requête par embeddings pour les deux ; seul le filtre `fact_types` diffère
+>    (sémantique vs épisodique).
+> 5. **Ajout du fork déterministe/LLM** (`routing.run_deterministic`), absent du
+>    brouillon initial mais réellement la première branche du pipeline : la
+>    majorité des tours n'atteignent jamais le LLM.
+
+```mermaid
+flowchart TD
+    MSG["💬 Message utilisateur"]
+    GATE_IN{"🛡️ Garde-fou d'entrée ?<br>(stub, chantier 004)"}
+    REFUS_IN["💬 Réponse de refus"]
+
+    subgraph READ["🔍 Lecture mémoire (avant tout traitement)"]
+        direction LR
+        SEM["🎯 FactStore.search(user_id, message, fact_types=SEMANTIC)<br>LocalFactStore (hors-ligne) / ChromaFactStore (prod)<br>→ jusqu'à k=5 faits sémantiques, triés par récence<br>preference/profile — toujours conservés (R2/R3)"]
+        EPI["🔎 FactStore.search(user_id, message, fact_types=EPISODIC)<br>→ jusqu'à k=5 faits épisodiques récents<br>order_info/dispute (R2/R3)"]
+    end
+
+    CTX["📝 Faits rendus injectés dans le system prompt<br>(« Mémoire: … »)"]
+    HIST["🗄️ Checkpointer LangGraph<br>PostgresSaver (prod, sync) / InMemorySaver (hors-ligne)<br>→ historique de la session, thread_id = user_id<br>(mémoire court terme — R1)"]
+
+    ROUTE{"🔀 Intention déterministe reconnue ?<br>(commande, stock, FAQ, oubli, inspection)"}
+    DET["⚙️ Outil métier appelé directement<br>sans LLM"]
+    WINDOW["🪟 Fenêtre glissante : 30 derniers messages<br>(soft window — rien n'est purgé du checkpoint)"]
+    LLM["🤖 LLM (ReAct, outillé)<br>system prompt (mémoire + contexte) + historique fenêtré"]
+
+    SAVE["🗄️ Checkpointer persiste automatiquement<br>le nouveau state (messages + status) — R1"]
+
+    EXTRACT["🧠 Extractor.extract(user_id, [message])<br>DeterministicExtractor (regex, hors-ligne) /<br>LangMemExtractor (LLM, prod)<br>sélectif : hors-sujet → rien (contrat d'éligibilité)"]
+    HASFACTS{"Faits durables détectés ?"}
+
+    subgraph WRITE["✍️ Écriture mémoire (chaque tour, synchrone — R4)"]
+        direction TB
+        WRITELOOP["🗄️ Pour chaque fait : FactStore.write(fact)"]
+        CONSOL["🔁 Consolidation FR-009<br>sémantique : remplace sur (fact_type, key)<br>épisodique : dédup par hash du contenu"]
+        WRITELOOP --> CONSOL
+    end
+
+    GATE_OUT{"🛡️ Garde-fou de sortie ?<br>(stub, chantier 004)"}
+    REFUS_OUT["💬 Réponse de refus"]
+    RESP["💬 Réponse agent → utilisateur"]
+    FIN(["✅ Fin du tour"])
+
+    MSG --> GATE_IN
+    GATE_IN -- "refusé" --> REFUS_IN --> FIN
+    GATE_IN -- "ok" --> SEM
+    GATE_IN -- "ok" --> EPI
+    SEM --> CTX
+    EPI --> CTX
+    CTX --> HIST --> ROUTE
+    ROUTE -- "oui" --> DET
+    ROUTE -- "non" --> WINDOW --> LLM
+    DET --> SAVE
+    LLM --> SAVE
+    SAVE --> EXTRACT --> HASFACTS
+    HASFACTS -- "non" --> GATE_OUT
+    HASFACTS -- "oui" --> WRITELOOP
+    CONSOL --> GATE_OUT
+    GATE_OUT -- "ok" --> RESP --> FIN
+    GATE_OUT -- "refusé" --> REFUS_OUT --> FIN
+```

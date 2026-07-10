@@ -1,6 +1,6 @@
-"""Tests d'acceptance — mémoire long terme (chantier 003).
+"""Tests d'acceptance — mémoire long terme (chantiers 003 + 003b).
 
-R1 (fil court terme) reste couvert via le checkpointer. R2/R3/R5/R6 s'appuient
+R1 (fil court terme) reste couvert via le checkpointer. R2/R3/R4/R5/R6 s'appuient
 sur le FactStore : on pilote le vrai agent et on assère sur le stocké
 (`Agent.inspect_memory`) ou sur la réponse déterministe (oubli/inspection), jamais
 sur l'écho du modèle offline. Tout tourne sur `LocalFactStore`, sans Docker.
@@ -115,3 +115,41 @@ def test_forget_confirmation_is_deterministic_template():
     reply = agent.respond(user, "oublie mon adresse")
     assert "irréversible" in reply.lower()
     assert "je confirme" in reply.lower()
+
+
+def test_cross_session_automatic_capture():
+    # R2 automatique : un fait durable énoncé en conversation (sans remember_fact
+    # manuel) est capté, puis retrouvé dans une nouvelle session (même Store).
+    store = LocalFactStore()
+    s1 = build_reference_agent(store)
+    s1.respond("acc-auto", "Bonjour, tu peux me tutoyer. Je fais du L.")
+
+    s2 = build_reference_agent(store)  # nouvelle session, même client, même Store
+    facts = {f.key: f.content for f in s2.inspect_memory("acc-auto")}
+    assert facts.get("tutoiement") == "oui"
+    assert facts.get("taille") == "L"
+
+
+def test_r4_no_loss_beyond_window():
+    # R4 : un fait donné au 1er tour survit au-delà de 30 messages (capté à
+    # l'arrivée, jamais perdu par la fenêtre glissante).
+    store = LocalFactStore()
+    agent = build_reference_agent(store)
+    user = "acc-r4"
+    agent.respond(user, "Tu peux me tutoyer.")
+    for i in range(31):
+        agent.respond(user, f"Question de suivi {i} sur un maillot.")
+
+    keys = {f.key for f in agent.inspect_memory(user)}
+    assert "tutoiement" in keys
+
+
+def test_repeated_order_not_duplicated():
+    # L'extraction par tour revoit le même numéro plusieurs fois -> une entrée.
+    store = LocalFactStore()
+    agent = build_reference_agent(store)
+    user = "acc-dedup"
+    agent.respond(user, "Ma commande O-2024-0101 est en retard.")
+    agent.respond(user, "Des nouvelles de O-2024-0101 ?")
+    orders = [f for f in agent.inspect_memory(user) if f.fact_type == "order_info"]
+    assert len(orders) == 1

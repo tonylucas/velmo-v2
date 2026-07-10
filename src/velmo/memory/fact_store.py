@@ -10,9 +10,9 @@ selects by ``CHROMA_URL``, exactly like ``get_kb()``.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Protocol
-from uuid import uuid4
 
 from .facts import Fact, is_semantic
 
@@ -31,7 +31,10 @@ def semantic_storage_key(fact: Fact) -> str:
 
 
 def episodic_storage_key(fact: Fact) -> str:
-    return f"{fact.user_id}:{fact.fact_type}:{fact.key}:{uuid4().hex}"
+    """Content-derived id: re-extracting the same content is idempotent, while
+    two distinct episodic contents coexist (FR-009 episodic append)."""
+    digest = hashlib.sha256(fact.content.encode("utf-8")).hexdigest()[:16]
+    return f"{fact.user_id}:{fact.fact_type}:{fact.key}:{digest}"
 
 
 def _matches(fact: Fact, needle: str | None) -> bool:

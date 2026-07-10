@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from velmo.memory.facts import Fact
-from velmo.memory.fact_store import LocalFactStore, get_fact_store, semantic_storage_key
+from velmo.memory.fact_store import (
+    LocalFactStore,
+    episodic_storage_key,
+    get_fact_store,
+    semantic_storage_key,
+)
 
 
 def _write(store, user_id, fact_type, key, content):
@@ -105,3 +110,19 @@ def test_semantic_storage_key_is_namespaced_by_user():
     assert key_a.startswith("A:")
     assert key_b.startswith("B:")
     assert key_a != key_b
+
+
+def test_episodic_storage_key_is_content_derived():
+    f1 = Fact.new("u1", "order_info", "order", "O-2024-0101")
+    f2 = Fact.new("u1", "order_info", "order", "O-2024-0101")
+    f3 = Fact.new("u1", "order_info", "order", "O-2024-0102")
+    assert episodic_storage_key(f1) == episodic_storage_key(f2)
+    assert episodic_storage_key(f1) != episodic_storage_key(f3)
+
+
+def test_episodic_write_is_idempotent_on_same_content():
+    store = LocalFactStore()
+    store.write(Fact.new("u1", "order_info", "order", "O-2024-0101"))
+    store.write(Fact.new("u1", "order_info", "order", "O-2024-0101"))
+    orders = [f for f in store.all("u1") if f.fact_type == "order_info"]
+    assert len(orders) == 1

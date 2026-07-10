@@ -23,6 +23,7 @@ vector = [
 llm = [
     "langchain-azure-ai>=1.0,<2.0",
     "azure-ai-inference>=1.0.0b9",
+    "langmem>=0.0.1,<0.1",
 ]
 
 [dependency-groups]
