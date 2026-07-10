@@ -188,7 +188,25 @@ flowchart TD
     REFUS_IN --> LOG
     MASK --> LOG
     REFUS_OUT --> LOG
+
+    classDef local fill:#d4f4dd,stroke:#2e7d32,color:#1b5e20
+    classDef prod fill:#e6d9f7,stroke:#6a3fb5,color:#4a1a8c
+    classDef block fill:#f8d7da,stroke:#c62828,color:#7f1d1d
+    classDef mask fill:#fff3cd,stroke:#b8860b,color:#6b4e00
+    classDef safe fill:#d6e4f7,stroke:#1565c0,color:#0d3c73
+    classDef journal fill:#eceff1,stroke:#546e7a,color:#37474f
+
+    class MOD_IN,INJ_IN,OOS_IN,SEC_IN,SEC_OUT,MOD_OUT local
+    class CS_MOD,CS_SHIELD prod
+    class REFUS_IN,REFUS_OUT block
+    class MASK mask
+    class GRAPH,EXTRACT,RESP safe
+    class LOG journal
 ```
+
+Légende : 🟢 détection locale (toujours active, testée) · 🟣 renfort prod Content Safety (seam,
+jamais exercé hors-ligne) · 🔴 blocage/refus · 🟡 masquage (le message assaini continue) · 🔵 suite
+du pipeline (agent, extraction, réponse) · ⚪ journal des décisions.
 
 ## 6. Découpage en module
 
