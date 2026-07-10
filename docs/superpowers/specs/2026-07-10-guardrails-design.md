@@ -131,26 +131,26 @@ le checkpointer. Le secret n'atteint donc jamais la mémoire court terme ni long
 
 ## 5. Flowchart
 
-Chaque catégorie a **sa** voie : un détecteur déterministe offline (toujours actif, c'est lui que
-les tests exercent), renforcé en prod par son appel Content Safety propre — la modération par
-`text:analyze`, l'injection par `text:shieldPrompt` (Prompt Shields). Les appels prod ne se
-déclenchent que si le déterministe n'a pas déjà bloqué (short-circuit).
+Chaque catégorie a **sa** voie : une détection locale (règles, toujours active — c'est elle que les
+tests exercent), renforcée en production par la modération managée Azure Content Safety. La
+modération et l'anti-injection sont deux voies distinctes. Le renfort prod ne se déclenche que si la
+détection locale n'a pas déjà bloqué.
 
 ```mermaid
 flowchart TD
     MSG["💬 Message utilisateur"]
 
-    subgraph GIN["🛡️ Garde-fou d'entrée — check_input (déterministe d'abord, prod en renfort)"]
+    subgraph GIN["🛡️ Garde-fou d'entrée — détection locale d'abord, renfort prod ensuite"]
         direction TB
-        MOD_IN["⚙️ Modération (regex offline)<br>haine · violence · sexuel"]
-        INJ_IN["⚙️ Injection (regex offline)<br>« ignore tes instructions »…"]
-        OOS_IN["⚙️ Hors-périmètre (lexique offline)<br>valorisation · revente · juridique…"]
-        SEC_IN["⚙️ Secrets non ambigus (regex offline)<br>carte+Luhn · IBAN · mdp · clé"]
-        CS_MOD["☁️ prod : text:analyze<br>(modération, sévérité ≥ seuil)"]
-        CS_SHIELD["☁️ prod : text:shieldPrompt<br>(Prompt Shields — injection)"]
+        MOD_IN["Modération (règles locales)<br>haine · violence · sexuel"]
+        INJ_IN["Anti-injection (règles locales)<br>« ignore tes instructions »…"]
+        OOS_IN["Hors-périmètre (règles locales)<br>valorisation · revente · juridique…"]
+        SEC_IN["Secrets (règles locales)<br>carte · IBAN · mot de passe · clé"]
+        CS_MOD["☁️ Azure Content Safety<br>modération managée"]
+        CS_SHIELD["☁️ Azure Content Safety<br>protection anti-injection"]
         VERD_IN{"Verdict d'entrée"}
-        MOD_IN -. "si dispo & pas déjà bloqué" .-> CS_MOD
-        INJ_IN -. "si dispo & pas déjà bloqué" .-> CS_SHIELD
+        MOD_IN -. "en prod, si pas déjà bloqué" .-> CS_MOD
+        INJ_IN -. "en prod, si pas déjà bloqué" .-> CS_SHIELD
         MOD_IN --> VERD_IN
         CS_MOD --> VERD_IN
         INJ_IN --> VERD_IN
@@ -159,34 +159,34 @@ flowchart TD
         SEC_IN --> VERD_IN
     end
 
-    REFUS_IN["💬 Refus poli (Decision.refusal)"]
-    MASK["✂️ Caviardage du secret<br>message ← Decision.sanitized"]
+    REFUS_IN["💬 Refus poli"]
+    MASK["✂️ Secret caviardé<br>le message assaini poursuit"]
 
-    GRAPH["🤖 agent_graph.answer<br>(routage déterministe / LLM outillé)<br>sur le message assaini"]
+    GRAPH["🤖 Agent<br>routage déterministe / LLM outillé<br>sur le message assaini"]
     EXTRACT["🧠 Extraction mémoire<br>sur le message assaini<br>(le secret n'est jamais stocké)"]
 
-    subgraph GOUT["🛡️ Garde-fou de sortie — check_output(identity)"]
+    subgraph GOUT["🛡️ Garde-fou de sortie — identité-aware"]
         direction TB
-        SEC_OUT["⚙️ Secrets non ambigus (regex)<br>+ email tiers ∉ identité session (identité-aware)"]
-        MOD_OUT["⚙️ Modération : regex offline<br>+ text:analyze en prod (si dispo)"]
+        SEC_OUT["Secrets (règles locales)<br>+ email d'un autre client → fuite"]
+        MOD_OUT["Modération (règles locales)<br>+ Azure Content Safety en prod"]
         VERD_OUT{"Verdict de sortie"}
         SEC_OUT --> MOD_OUT --> VERD_OUT
     end
 
     REFUS_OUT["💬 Réponse neutralisée / refus poli"]
     RESP["💬 Réponse → utilisateur"]
-    LOG[("🗒️ events<br>catégorie · emplacement · action · horodatage")]
+    LOG[("🗒️ Journal des décisions<br>catégorie · emplacement · action · horodatage")]
 
     MSG --> MOD_IN & INJ_IN & OOS_IN & SEC_IN
-    VERD_IN -- "block (modération/injection/hors-périmètre)" --> REFUS_IN
-    VERD_IN -- "mask (secret)" --> MASK --> GRAPH
-    VERD_IN -- "allow" --> GRAPH
+    VERD_IN -- "bloc (modération / injection / hors-périmètre)" --> REFUS_IN
+    VERD_IN -- "masquage (secret)" --> MASK --> GRAPH
+    VERD_IN -- "autorisé" --> GRAPH
     GRAPH --> EXTRACT --> SEC_OUT
-    VERD_OUT -- "block" --> REFUS_OUT
-    VERD_OUT -- "allow" --> RESP
+    VERD_OUT -- "bloc" --> REFUS_OUT
+    VERD_OUT -- "autorisé" --> RESP
 
-    VERD_IN -. "block / mask" .-> LOG
-    VERD_OUT -. "block" .-> LOG
+    VERD_IN -. "bloc / masquage" .-> LOG
+    VERD_OUT -. "bloc" .-> LOG
     REFUS_IN --> LOG
 ```
 
