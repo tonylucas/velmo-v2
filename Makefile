@@ -21,6 +21,9 @@ seed-kb:
 chat:
 	uv run python -m velmo.cli
 
+demo:
+	uv run --extra demo streamlit run src/velmo/demo_app.py
+
 eval:
 	uv run python -m velmo.mlops.score
 
