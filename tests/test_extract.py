@@ -18,8 +18,8 @@ def test_size_regex_does_not_match_unrelated_je_fais_clauses():
         "Je fais du sport, la taille L est-elle dispo ?",
     ):
         facts = _facts(text)
-        pointures = [f for f in facts if f.fact_type == "profile" and f.key == "pointure"]
-        assert pointures == [], f"spurious pointure extracted from {text!r}: {pointures}"
+        sizes = [f for f in facts if f.fact_type == "profile" and f.key in ("taille", "pointure")]
+        assert sizes == [], f"spurious size extracted from {text!r}: {sizes}"
 
 
 def test_extracts_order_number_as_episodic():
@@ -39,11 +39,36 @@ def test_extracts_pro_status_as_profile():
     assert profiles and "pro" in profiles[0].content.lower()
 
 
+def test_extracts_taille_as_profile():
+    # Clothing/jersey size: a letter or a number (e.g. "32" for trousers).
+    for text, expected in (
+        ("Je fais du XL.", "XL"),
+        ("Ma taille est M.", "M"),
+        ("Je fais du 32.", "32"),
+    ):
+        facts = _facts(text)
+        tailles = [f for f in facts if f.fact_type == "profile" and f.key == "taille"]
+        assert tailles and tailles[0].content == expected, f"no taille extracted from {text!r}"
+
+
 def test_extracts_pointure_as_profile():
-    for text in ("Je chausse du L.", "Je fais du XL.", "Ma pointure est M."):
+    # Shoe size ("pointure"): always a number in French sizing, never a letter.
+    for text, expected in (
+        ("Je chausse du 44.", "44"),
+        ("Ma pointure est 42.", "42"),
+    ):
         facts = _facts(text)
         pointures = [f for f in facts if f.fact_type == "profile" and f.key == "pointure"]
-        assert pointures, f"no pointure extracted from {text!r}"
+        assert pointures and pointures[0].content == expected, (
+            f"no pointure extracted from {text!r}"
+        )
+
+
+def test_pointure_does_not_match_letter_sizes():
+    # "Je chausse du L" is not valid French (shoe sizes are numeric) — no match.
+    facts = _facts("Je chausse du L.")
+    pointures = [f for f in facts if f.fact_type == "profile" and f.key == "pointure"]
+    assert pointures == []
 
 
 def test_off_topic_message_extracts_nothing():

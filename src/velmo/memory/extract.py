@@ -19,12 +19,19 @@ from pydantic import BaseModel
 from .facts import FACT_TYPES, Fact
 
 _ORDER_RE = re.compile(r"O-\d{4}-\d{4}")
-_SIZE_RE = re.compile(
-    # First-person statements of one's own size, with the size token immediately
-    # adjacent to the cue — avoids matching unrelated clauses like "je fais appel
-    # à l'équipe" or stock questions like "la taille L est-elle dispo ?".
-    r"\b(?:je\s+chausse|je\s+fais|je\s+taille|ma\s+pointure)\s+"
-    r"(?:du\s+|un\s+|une\s+|taille\s+|le\s+|est\s+)?(XXL|XL|XS|S|M|L)\b",
+_TAILLE_RE = re.compile(
+    # Clothing/jersey size: letter (S/M/L/XL/XXL) or a number (e.g. pants "32").
+    # First-person cue with the size token immediately adjacent — avoids matching
+    # unrelated clauses like "je fais appel à l'équipe" or stock questions like
+    # "la taille L est-elle dispo ?".
+    r"\b(?:je\s+fais|je\s+taille|ma\s+taille)\s+"
+    r"(?:du\s+|un\s+|une\s+|taille\s+|le\s+|est\s+)?(XXL|XL|XS|S|M|L|\d{2})\b",
+    re.IGNORECASE,
+)
+_POINTURE_RE = re.compile(
+    # Shoe size ("pointure"): always a number in French sizing, never a letter.
+    r"\b(?:je\s+chausse|ma\s+pointure)\s+"
+    r"(?:du\s+|un\s+|le\s+|est\s+)?(\d{2})\b",
     re.IGNORECASE,
 )
 _TUTOIEMENT_HINTS = ("tutoie", "tutoyer")
@@ -50,10 +57,15 @@ class DeterministicExtractor:
             facts.append(Fact.new(user_id, "preference", "tutoiement", "oui", source="extractor"))
         if any(h in low for h in _PRO_HINTS):
             facts.append(Fact.new(user_id, "profile", "segment", "client pro", source="extractor"))
-        size = _SIZE_RE.search(text)
-        if size:
+        taille = _TAILLE_RE.search(text)
+        if taille:
             facts.append(
-                Fact.new(user_id, "profile", "pointure", size.group(1).upper(), source="extractor")
+                Fact.new(user_id, "profile", "taille", taille.group(1).upper(), source="extractor")
+            )
+        pointure = _POINTURE_RE.search(text)
+        if pointure:
+            facts.append(
+                Fact.new(user_id, "profile", "pointure", pointure.group(1), source="extractor")
             )
         return facts
 
@@ -61,10 +73,11 @@ class DeterministicExtractor:
 ELIGIBILITY_INSTRUCTIONS = (
     "Extract only durable facts about the customer that fit one of these types: "
     "preference (e.g. wants to be addressed informally / 'tutoiement'), "
-    "profile (e.g. shoe/jersey size 'pointure', pro-customer segment), "
+    "profile (e.g. clothing/jersey size 'taille' — a letter S/M/L/XL/XXL or a number, "
+    "shoe size 'pointure' — always a number, pro-customer segment), "
     "order_info (an order number the customer refers to), "
     "dispute (an ongoing dispute the customer raises). "
-    "Use a short 'key' (the attribute name, e.g. 'tutoiement', 'pointure', 'segment', 'order') "
+    "Use a short 'key' (the attribute name, e.g. 'tutoiement', 'taille', 'pointure', 'segment', 'order') "
     "and a concise 'content' value. Ignore small talk, ephemeral remarks and anything off-topic. "
     "If there is no durable fact, extract nothing."
 )

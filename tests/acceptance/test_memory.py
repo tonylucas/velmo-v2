@@ -122,12 +122,12 @@ def test_cross_session_automatic_capture():
     # manuel) est capté, puis retrouvé dans une nouvelle session (même Store).
     store = LocalFactStore()
     s1 = build_reference_agent(store)
-    s1.respond("acc-auto", "Bonjour, tu peux me tutoyer. Je chausse du L.")
+    s1.respond("acc-auto", "Bonjour, tu peux me tutoyer. Je fais du L.")
 
     s2 = build_reference_agent(store)  # nouvelle session, même client, même Store
     facts = {f.key: f.content for f in s2.inspect_memory("acc-auto")}
     assert facts.get("tutoiement") == "oui"
-    assert facts.get("pointure") == "L"
+    assert facts.get("taille") == "L"
 
 
 def test_r4_no_loss_beyond_window():
