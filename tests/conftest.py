@@ -52,7 +52,7 @@ class AllowAllGuardrails:
     def check_input(self, message: str) -> Decision:
         return Decision(allowed=True, action="allow")
 
-    def check_output(self, text: str) -> Decision:
+    def check_output(self, text: str, *, identity: object | None = None) -> Decision:
         return Decision(allowed=True, action="allow")
 
 

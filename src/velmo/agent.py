@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from . import agent_graph
-from .guardrails import GuardrailEngine
+from .guardrails import GuardrailEngine, Identity
 from .memory.checkpointer import get_checkpointer
 from .memory.extract import Extractor, get_extractor
 from .memory.fact_store import get_fact_store
@@ -50,26 +50,45 @@ class Agent:
         if not gate_in.allowed:
             return gate_in.refusal or DEFAULT_REFUSAL
 
+        # Masking keeps the pipeline going on a sanitized message: the secret never
+        # reaches the LLM, the memory, the checkpoint or the logs.
+        safe_message = (
+            gate_in.sanitized
+            if gate_in.action == "mask" and gate_in.sanitized is not None
+            else message
+        )
+
         answer = agent_graph.answer(
             self.session,
             user_id,
             self.kb,
-            message,
+            safe_message,
             chat_model=self.chat_model,
             checkpointer=self.checkpointer,
             thread_id=user_id,
             store=self.store,
         )
 
-        # Memory write step of the pipeline: extract durable facts from the user
-        # message and persist them (FactStore.write applies FR-009 consolidation).
-        for fact in self.extractor.extract(user_id, [HumanMessage(content=message)]):
+        for fact in self.extractor.extract(user_id, [HumanMessage(content=safe_message)]):
             self.store.write(fact)
 
-        gate_out = self.guardrails.check_output(answer)
+        gate_out = self.guardrails.check_output(answer, identity=self._identity(user_id))
         if not gate_out.allowed:
             answer = gate_out.refusal or DEFAULT_REFUSAL
         return answer
+
+    def _identity(self, user_id: str) -> Identity:
+        """Build the session customer's identity allow-list (email) for the output
+        leak check. Returns an empty identity when unavailable (offline/tests)."""
+        if self.session is None:
+            return Identity()
+        try:
+            from .db import Customer
+
+            customer = self.session.get(Customer, user_id)
+        except Exception:
+            return Identity()
+        return Identity(email=customer.email if customer is not None else None)
 
     def get_state(self, user_id: str):
         """Return the conversation messages retained for a user (traceability)."""
