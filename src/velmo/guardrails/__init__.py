@@ -1,46 +1,26 @@
-"""Garde-fous d'entrée et de sortie de l'agent Velmo.
+"""Input/output guardrails for the Velmo agent.
 
-Surface publique stable consommée par l'agent et la suite d'acceptance.
-Les méthodes de détection (modération, PII, injection, périmètre) sont à construire.
+Stable public surface consumed by the agent and the acceptance suite. The engine
+is assembled in engine.py; this module re-exports the stable names.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# Catégories de contenus contrôlés.
-CATEGORIES = (
-    "hate",
-    "violence",
-    "sexual",
-    "pii",
-    "out_of_scope",
-    "prompt_injection",
-    "secret_leak",
-)
+from .decision import CATEGORIES, Decision, Identity
 
-
-@dataclass
-class Decision:
-    """Verdict d'un garde-fou sur un message."""
-
-    allowed: bool
-    action: str  # "allow" | "block"
-    category: str | None = None
-    reason: str = ""
-    refusal: str | None = None
+__all__ = ["CATEGORIES", "Decision", "Identity", "GuardrailEngine"]
 
 
 @dataclass
 class GuardrailEngine:
-    """Applique les garde-fous d'entrée et de sortie et journalise les décisions."""
+    """Temporary no-op stub, replaced by engine.GuardrailEngine in Task 5."""
 
     events: list[dict] = field(default_factory=list)
 
     def check_input(self, message: str) -> Decision:
-        """Contrôle un message entrant (modération, injection, périmètre)."""
         return Decision(allowed=True, action="allow")
 
     def check_output(self, text: str) -> Decision:
-        """Contrôle une réponse sortante (PII, secrets, périmètre, modération)."""
         return Decision(allowed=True, action="allow")
