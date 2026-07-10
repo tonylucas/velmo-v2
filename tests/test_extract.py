@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import HumanMessage
 
-from velmo.memory.extract import DeterministicExtractor
+from velmo.memory.extract import DeterministicExtractor, get_extractor
 
 
 def _facts(text: str):
@@ -48,3 +48,8 @@ def test_facts_are_bound_to_the_given_user():
 def test_source_is_extractor():
     facts = _facts("Ma commande O-2024-0101 est en retard.")
     assert facts and all(f.source == "extractor" for f in facts)
+
+
+def test_get_extractor_offline_is_deterministic(monkeypatch):
+    monkeypatch.delenv("AZURE_AI_INFERENCE_ENDPOINT", raising=False)
+    assert isinstance(get_extractor(), DeterministicExtractor)
