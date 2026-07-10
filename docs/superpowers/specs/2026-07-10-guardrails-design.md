@@ -229,6 +229,16 @@ Chaque fichier a une responsabilité unique et se teste isolément.
 - **LLM-juge GPT-4o** : non retenu. Prompt Shields possède l'injection ; aucune catégorie restante
   ne justifie un appel LLM dédié. Réintroductible plus tard si les évals (005) révèlent un trou sur
   le hors-périmètre.
+- **Purge du checkpointer sur blocage de sortie** : différée (trouvé lors de la revue finale de
+  branche, décision explicite de l'utilisateur de différer). Le masquage protège le secret **saisi
+  par le client** : il n'atteint jamais le LLM ni la mémoire. Mais si le LLM génère ou répète
+  lui-même une donnée sensible dans sa réponse (ex. via la sortie d'un outil métier), `check_output`
+  la bloque bien pour l'utilisateur — elle est cependant déjà écrite dans le checkpointer *avant* ce
+  contrôle, donc elle persiste en mémoire court terme et serait rejouée au tour suivant. Corriger
+  ça suppose de purger/rédiger le dernier message du checkpointer sur blocage de sortie, ce qui
+  touche `agent_graph.py`/le checkpointer en plus de `guardrails/agent.py` — un changement de
+  contrat plus large que ce chantier. Risque prod-only (le modèle offline ne génère jamais de
+  secret) ; à traiter si les évals ou l'exploitation révèlent un cas réel.
 
 ## 9. Stratégie de test
 
