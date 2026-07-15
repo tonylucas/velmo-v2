@@ -92,6 +92,17 @@ sur du local — ce serait contraire à l'objectif (montrer la vraie mémoire Ch
 - Édition/suppression manuelle de faits depuis l'UI : le droit à l'oubli (R5) se démontre déjà
   dans le chat (« oublie mon adresse »).
 
+## 5b. Problème connu — watcher Streamlit × PyTorch (résolu)
+
+Les embeddings Chroma (`sentence-transformers`) chargent **PyTorch**. Le watcher de fichiers de
+Streamlit inspecte les modules importés à chaque rerun ; en parcourant `torch.classes`, il
+provoque un **segfault natif** (exit 139, « leaked semaphore », aucune traceback Python). Reproduit
+de façon déterministe (watcher actif + modification d'un source pendant que torch est chargé →
+crash) et corrigé en **désactivant le watcher** : `--server.fileWatcherType none` passé en **flag
+CLI** dans la cible `make demo` (mécanisme fiable qui prime sur `.streamlit/config.toml`, dont la
+prise en compte s'est révélée non garantie selon la version/découverte de config). La démo n'a pas
+besoin du hot-reload. Vérifié : sous la même procédure, `none` ne crashe jamais, `auto` crashe.
+
 ## 6. Stratégie de test
 
 Outil de démo : pas de suite d'acceptance dédiée. Vérifications faites : `import velmo.demo_app`

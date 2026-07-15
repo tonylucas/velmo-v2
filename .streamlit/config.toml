@@ -1,0 +1,11 @@
+# Streamlit configuration for the Velmo 2.0 demo.
+
+[server]
+# sentence-transformers (used for the Chroma embeddings) pulls in PyTorch.
+# Streamlit's default module auto-reloader segfaults (exit 139) when it walks
+# torch.classes.__path__ during file watching. The demo doesn't need hot reload,
+# so disable the watcher entirely.
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
