@@ -8,9 +8,9 @@ memory/quality; otherwise `global_` is the 55/45 memory/quality blend.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
 from ._types import Evaluable
+from .report import write_report
 from .suites.guardrails import run_guardrail_suite
 from .suites.memory import run_memory_suite
 from .suites.quality import run_quality_suite
@@ -25,6 +25,7 @@ __all__ = [
     "current_version",
     "enforce_threshold",
     "run_eval",
+    "write_report",
 ]
 
 WEIGHTS = {"memory": 0.55, "quality": 0.45}
@@ -82,14 +83,3 @@ def enforce_threshold(scores: Scores, min_score: float) -> None:
     """Block delivery (raise `DeliveryBlocked`) when the global score is too low."""
     if scores.global_ < min_score:
         raise DeliveryBlocked(f"global score {scores.global_:.3f} below threshold {min_score:.3f}")
-
-
-def write_report(scores: Scores, path: Path) -> None:
-    """Write the follow-up report (memory, block rate, false positives, latency, cost).
-
-    Implemented in the next task (chantier 005a, report). Kept as a stub here —
-    not wired to `.report` yet — so `tests/acceptance/test_mlops.py`, which
-    imports this name at module scope, keeps collecting: only
-    `test_report_contains_signals` is expected to fail until then.
-    """
-    raise NotImplementedError("write_report")
