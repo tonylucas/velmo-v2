@@ -20,7 +20,14 @@ from sqlalchemy import (
     String,
     create_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    mapped_column,
+    relationship,
+    sessionmaker,
+)
 from sqlalchemy.pool import StaticPool
 
 
@@ -174,7 +181,7 @@ def session_factory(url: str | None = None):
     return sessionmaker(bind=make_engine(url), expire_on_commit=False, future=True)
 
 
-def fresh_sqlite_session():
+def fresh_sqlite_session() -> Session:
     """Session SQLite en mémoire avec le schéma créé (tests / évaluation hors-ligne).
 
     `StaticPool` + `check_same_thread=False` : le runtime LangGraph exécute les

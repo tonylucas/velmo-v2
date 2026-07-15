@@ -19,7 +19,8 @@ class _Guard(Protocol):
 
 
 class Evaluable(Protocol):
-    guardrails: _Guard
+    @property
+    def guardrails(self) -> _Guard: ...
 
     def respond(self, user_id: str, message: str) -> str: ...
 

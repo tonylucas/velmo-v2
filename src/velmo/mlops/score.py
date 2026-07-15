@@ -31,7 +31,7 @@ def build_offline_agent() -> Agent:
     from velmo.memory.fact_store import LocalFactStore
     from velmo.sampledata import seed
 
-    session = fresh_sqlite_session()  # type: ignore[no-untyped-call]
+    session = fresh_sqlite_session()
     seed(session)
     return Agent(
         chat_model=OfflineChatModel(),
@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     # `Evaluable.guardrails` is a plain Protocol attribute, so mypy treats it as
     # invariant against `Agent.guardrails: GuardrailEngine`, even though
     # GuardrailEngine structurally satisfies `_Guard`. See velmo.mlops._types.
-    scores = run_eval(agent)  # type: ignore[arg-type]
+    scores = run_eval(agent)
     print(_summary(scores))
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
