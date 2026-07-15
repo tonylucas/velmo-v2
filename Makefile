@@ -21,6 +21,11 @@ seed-kb:
 chat:
 	uv run python -m velmo.cli
 
+demo:
+	ANONYMIZED_TELEMETRY=False TOKENIZERS_PARALLELISM=false \
+		uv run --extra demo --extra llm --extra vector \
+		streamlit run src/velmo/demo_app.py --server.fileWatcherType none
+
 eval:
 	uv run python -m velmo.mlops.score
 
