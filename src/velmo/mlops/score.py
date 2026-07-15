@@ -67,9 +67,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     agent = _select_agent(args.prod)
-    # `Evaluable.guardrails` is a plain Protocol attribute, so mypy treats it as
-    # invariant against `Agent.guardrails: GuardrailEngine`, even though
-    # GuardrailEngine structurally satisfies `_Guard`. See velmo.mlops._types.
     scores = run_eval(agent)
     print(_summary(scores))
 
