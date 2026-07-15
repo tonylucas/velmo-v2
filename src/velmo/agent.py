@@ -17,6 +17,7 @@ from .guardrails import GuardrailEngine, Identity
 from .memory.checkpointer import get_checkpointer
 from .memory.extract import Extractor, get_extractor
 from .memory.fact_store import get_fact_store
+from .trace import Trace
 
 DEFAULT_REFUSAL = (
     "Désolé, je ne peux pas traiter cette demande. Je reste à votre disposition "
@@ -45,8 +46,10 @@ class Agent:
         self.store = store if store is not None else get_fact_store()
         self.extractor: Extractor = extractor if extractor is not None else get_extractor()
 
-    def respond(self, user_id: str, message: str) -> str:
-        gate_in = self.guardrails.check_input(message)
+    def respond(self, user_id: str, message: str, *, trace: Trace | None = None) -> str:
+        """Answer one turn. Pass a `trace` to record what ran (demo panel only);
+        without one the pipeline behaves exactly as before and costs nothing."""
+        gate_in = self.guardrails.check_input(message, trace=trace)
         if not gate_in.allowed:
             return gate_in.refusal or DEFAULT_REFUSAL
 
@@ -67,12 +70,24 @@ class Agent:
             checkpointer=self.checkpointer,
             thread_id=user_id,
             store=self.store,
+            trace=trace,
         )
 
-        for fact in self.extractor.extract(user_id, [HumanMessage(content=safe_message)]):
+        facts = list(self.extractor.extract(user_id, [HumanMessage(content=safe_message)]))
+        for fact in facts:
             self.store.write(fact)
+        if trace is not None:
+            trace.add(
+                "memory",
+                "extract",
+                "written" if facts else "nothing",
+                count=len(facts),
+                keys=[f.key for f in facts],
+            )
 
-        gate_out = self.guardrails.check_output(answer, identity=self._identity(user_id))
+        gate_out = self.guardrails.check_output(
+            answer, identity=self._identity(user_id), trace=trace
+        )
         if not gate_out.allowed:
             answer = gate_out.refusal or DEFAULT_REFUSAL
         return answer

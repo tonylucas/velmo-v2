@@ -12,6 +12,7 @@ graph with only the new message; the runtime loads and persists the rest.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Annotated, Literal, TypedDict
 
 from langchain.agents import create_agent
@@ -24,6 +25,7 @@ from langgraph.graph.message import add_messages
 from .agent_tools import build_tools
 from .llm import get_chat_model
 from .routing import SYSTEM_PROMPT, run_deterministic
+from .trace import Trace
 
 
 class AgentState(TypedDict):
@@ -51,12 +53,13 @@ def build_graph(
     context: str = "",
     checkpointer: BaseCheckpointSaver | None = None,
     store=None,
+    trace: Trace | None = None,
 ):
     """Compile the two-node agent graph bound to one request."""
 
     def deterministic_node(state: AgentState) -> dict:
         message = state["messages"][-1].content
-        reply = run_deterministic(session, user_id, kb, message, store)
+        reply = run_deterministic(session, user_id, kb, message, store, trace=trace)
         if reply is None:
             return {"matched": False}
         return {"messages": [AIMessage(content=reply)], "matched": True}
@@ -75,7 +78,16 @@ def build_graph(
 
     def llm_node(state: AgentState) -> dict:
         windowed = window_messages(state["messages"])
-        result = react.invoke({"messages": windowed})
+        # One invoke on both paths; `timed` keeps the step even if the model
+        # raises (Azure timeout), so the panel shows where the turn died.
+        measure = trace.timed("graph", "llm_node") if trace is not None else nullcontext(None)
+        with measure as step:
+            result = react.invoke({"messages": windowed})
+            if step is not None:
+                step.outcome = "done"
+                step.detail["window"] = len(windowed)
+        if trace is not None:
+            _trace_tool_calls(trace, result["messages"])
         return {"messages": result["messages"]}
 
     graph = StateGraph(AgentState)
@@ -85,6 +97,17 @@ def build_graph(
     graph.add_conditional_edges("deterministic_node", route, {"llm_node": "llm_node", END: END})
     graph.add_edge("llm_node", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+def _trace_tool_calls(trace: Trace, messages: list[BaseMessage]) -> None:
+    """Record the tools the model chose, read back from the returned messages.
+
+    The tool calls are already in the AIMessages create_agent returns, so the
+    panel needs no callback handler to see them.
+    """
+    for message in messages:
+        for call in getattr(message, "tool_calls", None) or []:
+            trace.add("tool", call["name"], "called", args=call.get("args", {}))
 
 
 def answer(
@@ -97,6 +120,7 @@ def answer(
     checkpointer: BaseCheckpointSaver | None = None,
     thread_id: str | None = None,
     store=None,
+    trace: Trace | None = None,
 ) -> str:
     """Run one turn through the agent graph and return the final reply text."""
     if chat_model is None:
@@ -104,10 +128,19 @@ def answer(
     if store is not None:
         from .memory.facts import render_facts
 
-        memory = render_facts(select_memory(store, user_id, message))
+        facts = select_memory(store, user_id, message)
+        if trace is not None:
+            trace.add(
+                "memory",
+                "select_memory",
+                "injected" if facts else "empty",
+                count=len(facts),
+                keys=[f.key for f in facts],
+            )
+        memory = render_facts(facts)
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
-    graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store)
+    graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store, trace)
     config = {"configurable": {"thread_id": thread_id}} if checkpointer is not None else None
     result = graph.invoke(
         {"messages": [HumanMessage(content=message)], "matched": False},

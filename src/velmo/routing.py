@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from . import tools
 from .tools.memory_tools import forget_user_data, inspect_user_memory
+from .trace import Trace
 
 SYSTEM_PROMPT = (
     "Tu es l'assistant de support de Velmo, boutique de maillots de foot collector. "
@@ -40,9 +41,22 @@ _ALIASES = {
 }
 
 _FAQ_KEYWORDS = (
-    "frais de port", "frais de livraison", "délai", "delai", "politique de retour",
-    "authenticit", "certificat", "paiement", "réassort", "reassort", "rétractation",
-    "retractation", "entretien", "garantie", "remboursement sous", "conditions d'échange",
+    "frais de port",
+    "frais de livraison",
+    "délai",
+    "delai",
+    "politique de retour",
+    "authenticit",
+    "certificat",
+    "paiement",
+    "réassort",
+    "reassort",
+    "rétractation",
+    "retractation",
+    "entretien",
+    "garantie",
+    "remboursement sous",
+    "conditions d'échange",
 )
 
 _FORGET_RE = re.compile(r"\b(?:oubli|supprim|efface)\w*", re.IGNORECASE)
@@ -89,9 +103,32 @@ def _handle_forget(store, user_id: str, low: str, confirmed: bool) -> str:
     return f"C'est fait : j'ai oublié {label} ({result['count']} élément(s) supprimé(s))."
 
 
-def run_deterministic(session, user_id: str, kb, message: str, store=None) -> str | None:
+def run_deterministic(
+    session, user_id: str, kb, message: str, store=None, *, trace: Trace | None = None
+) -> str | None:
     """Route a message to a business tool by regex. Return the reply, or None
-    when no deterministic intent matches (LLM fallback)."""
+    when no deterministic intent matches (LLM fallback).
+
+    A `trace` (demo UI) records which intent matched. The routing decision itself
+    lives in `_route`, which names the intent it took.
+    """
+    if trace is None:
+        reply, _ = _route(session, user_id, kb, message, store)
+        return reply
+    # Timed: the fast path runs the business tools, so this is where a
+    # deterministic turn actually spends its milliseconds.
+    with trace.timed("graph", "deterministic_node") as step:
+        reply, intent = _route(session, user_id, kb, message, store)
+        if reply is None:
+            step.outcome = "no_match"
+        else:
+            step.outcome = "match"
+            step.detail["intent"] = intent
+    return reply
+
+
+def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | None, str | None]:
+    """Return (reply, intent) for a message, or (None, None) when nothing matches."""
     low = message.lower()
     order = ORDER_RE.search(message)
     order_id = order.group(0) if order else None
@@ -99,53 +136,67 @@ def run_deterministic(session, user_id: str, kb, message: str, store=None) -> st
 
     if order_id and "annul" in low:
         return _confirm_or_act(
-            confirmed, "annuler", order_id,
+            confirmed,
+            "annuler",
+            order_id,
             lambda: tools.cancel_order(session, order_id, user_id),
-        )
+        ), "cancel_order"
     if order_id and "adresse" in low:
         return _confirm_or_act(
-            confirmed, "modifier l'adresse de", order_id,
+            confirmed,
+            "modifier l'adresse de",
+            order_id,
             lambda: tools.update_shipping_address(
                 session, order_id, user_id, {"line1": "(à préciser)"}
             ),
-        )
-    if order_id and "taille" in low and any(w in low for w in ("chang", "modif", "tromp", "erreur")):
+        ), "update_shipping_address"
+    if (
+        order_id
+        and "taille" in low
+        and any(w in low for w in ("chang", "modif", "tromp", "erreur"))
+    ):
         size = SIZE_RE.search(message)
         new_size = size.group(1) if size else "M"
         return _confirm_or_act(
-            confirmed, f"changer la taille (vers {new_size}) de", order_id,
+            confirmed,
+            f"changer la taille (vers {new_size}) de",
+            order_id,
             lambda: tools.update_order_item(session, order_id, user_id, new_size),
-        )
+        ), "update_order_item"
     if order_id and any(w in low for w in ("retour", "échange", "echange", "renvoyer")):
         return _confirm_or_act(
-            confirmed, "ouvrir un retour pour", order_id,
+            confirmed,
+            "ouvrir un retour pour",
+            order_id,
             lambda: tools.create_return(session, order_id, user_id, "Demande client"),
-        )
+        ), "create_return"
     if order_id and "rembours" in low:
         amount_match = AMOUNT_RE.search(message)
         amount = float(amount_match.group(1).replace(",", ".")) if amount_match else 0.0
         return _confirm_or_act(
-            confirmed, f"rembourser {amount:.0f}€ sur", order_id,
+            confirmed,
+            f"rembourser {amount:.0f}€ sur",
+            order_id,
             lambda: tools.trigger_refund(session, order_id, user_id, amount, "Demande client"),
-        )
+        ), "trigger_refund"
 
     if order_id and any(w in low for w in ("suivi", "colis", "livr", "transport", "track")):
-        return _format_tracking(tools.track_shipment(session, order_id, user_id))
+        return _format_tracking(tools.track_shipment(session, order_id, user_id)), "track_shipment"
     if order_id:
-        return _format_order(tools.get_order(session, order_id, user_id))
+        return _format_order(tools.get_order(session, order_id, user_id)), "order_status"
 
     if any(w in low for w in ("dispo", "stock", "reste", "en taille")):
-        return _handle_stock(session, message, low)
+        return _handle_stock(session, message, low), "stock_check"
 
     if any(k in low for k in _FAQ_KEYWORDS):
-        return _format_kb(tools.search_kb(kb, message))
+        return _format_kb(tools.search_kb(kb, message)), "faq"
 
     if store is not None and any(h in low for h in _INSPECT_HINTS):
-        return inspect_user_memory(store, user_id)
+        return inspect_user_memory(store, user_id), "inspect_memory"
     if store is not None and _FORGET_RE.search(low):
-        return _handle_forget(store, user_id, low, confirmed)
+        return _handle_forget(store, user_id, low, confirmed), "forget"
 
-    return None
+    return None, None
 
 
 def _confirm_or_act(confirmed: bool, label: str, order_id: str, action: Callable[[], dict]) -> str:
