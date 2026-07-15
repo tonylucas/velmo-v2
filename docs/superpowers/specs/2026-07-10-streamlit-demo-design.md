@@ -103,6 +103,19 @@ CLI** dans la cible `make demo` (mécanisme fiable qui prime sur `.streamlit/con
 prise en compte s'est révélée non garantie selon la version/découverte de config). La démo n'a pas
 besoin du hot-reload. Vérifié : sous la même procédure, `none` ne crashe jamais, `auto` crashe.
 
+## 5c. Second crash (tour de chat) — thread worker dédié (résolu)
+
+Le watcher désactivé, un **second** segfault survient au premier message. Streamlit exécute chaque
+rerun sur un thread ScriptRunner **changeant** ; or les ressources natives de l'agent (modèle
+PyTorch, client Azure/**gRPC**, session SQLAlchemy, connexion checkpointer) créées sur un thread
+puis réutilisées sur un autre segfaultent sur macOS. Correctif : **épingler tout le travail de
+l'agent sur un unique thread worker** (`ThreadPoolExecutor(max_workers=1)`, helper
+`run_on_agent(...)`) — build, `respond`, `inspect_memory` et la lecture des clients passent tous par
+ce thread ; seul `guardrails.check_input` (pur, sans état natif) reste sur le thread Streamlit. Le
+chemin offline (build + plusieurs tours + écriture Chroma, tout sur le worker) est vérifié ; le
+chemin Azure n'a pas pu être exercé localement faute de credentials, mais l'isolation sur un thread
+unique est la parade standard aux crashs natifs cross-thread sous Streamlit.
+
 ## 6. Stratégie de test
 
 Outil de démo : pas de suite d'acceptance dédiée. Vérifications faites : `import velmo.demo_app`

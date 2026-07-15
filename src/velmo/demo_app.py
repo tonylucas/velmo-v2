@@ -18,7 +18,10 @@ Run with: ``make demo``.
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
+from collections.abc import Callable
+from typing import TypeVar
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -27,6 +30,8 @@ from sqlalchemy import select
 from velmo.agent import Agent, build_default_agent
 from velmo.db import Customer
 from velmo.guardrails import Decision
+
+T = TypeVar("T")
 
 SUGGESTIONS = [
     "Quel est le statut de ma commande O-2024-0101 ?",
@@ -47,15 +52,37 @@ PREREQ_HELP = (
 
 
 @st.cache_resource
+def _worker() -> concurrent.futures.ThreadPoolExecutor:
+    """A single, long-lived worker thread that owns ALL agent work.
+
+    Streamlit runs each rerun on its own (changing) ScriptRunner thread. The agent's
+    native resources — the PyTorch embedding model, the Azure/gRPC client, the
+    SQLAlchemy session, the Postgres checkpointer connection — are not safe to create
+    on one thread and reuse on another; doing so segfaults (exit 139) on macOS. Pinning
+    every call to one dedicated thread means each resource is created and used on the
+    same thread for the app's lifetime."""
+    return concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="velmo-agent")
+
+
+def run_on_agent(fn: Callable[..., T], *args: object) -> T:
+    """Execute an agent operation on the dedicated worker thread and block for it."""
+    return _worker().submit(fn, *args).result()
+
+
+def _build() -> Agent:
+    load_dotenv()
+    return build_default_agent()
+
+
+@st.cache_resource
 def build_prod_agent() -> Agent:
-    """Assemble the real production agent (Postgres + Chroma + Azure), cached so the
-    DB/Chroma connections and the checkpointer survive Streamlit reruns.
+    """Assemble the real production agent (Postgres + Chroma + Azure) on the worker
+    thread, cached so the DB/Chroma connections and the checkpointer survive reruns.
 
     Construction touches every backend (Chroma ``get_or_create_collection``, the
     Postgres checkpointer ``setup()``), so a failure here means a backend is down —
     surfaced by the preflight in ``main`` rather than swallowed."""
-    load_dotenv()
-    return build_default_agent()
+    return run_on_agent(_build)
 
 
 def load_customers(agent: Agent) -> dict[str, str]:
@@ -100,13 +127,14 @@ def render_chat_tab(agent: Agent, user_id: str) -> None:
     if not prompt:
         return
 
-    # Pure, deterministic decision — consistent with what respond() re-runs internally.
+    # Pure, deterministic decision (no native/session state) — safe on this thread,
+    # and consistent with what respond() re-runs internally on the worker thread.
     decision = agent.guardrails.check_input(prompt)
     badge = _badge(decision)
     sanitized = decision.sanitized if decision.action == "mask" else None
     history.append({"role": "user", "content": prompt, "badge": badge, "sanitized": sanitized})
 
-    answer = agent.respond(user_id, prompt)
+    answer = run_on_agent(agent.respond, user_id, prompt)
     history.append({"role": "assistant", "content": answer})
     st.rerun()
 
@@ -114,7 +142,7 @@ def render_chat_tab(agent: Agent, user_id: str) -> None:
 def render_memory_tab(agent: Agent, user_id: str) -> None:
     backend = type(agent.store).__name__
     st.caption(f"Backend mémoire long terme : `{backend}` — collection Chroma `velmo_memory`")
-    facts = agent.inspect_memory(user_id)
+    facts = run_on_agent(agent.inspect_memory, user_id)
     if not facts:
         st.info(
             "Aucun fait durable en base pour ce client. Énonce-en un dans le chat "
@@ -144,7 +172,7 @@ def main() -> None:
 
     try:
         agent = build_prod_agent()
-        customers = load_customers(agent)
+        customers = run_on_agent(load_customers, agent)
     except Exception as exc:  # backend down / misconfigured — show how to fix, don't crash
         st.error(PREREQ_HELP)
         st.exception(exc)
