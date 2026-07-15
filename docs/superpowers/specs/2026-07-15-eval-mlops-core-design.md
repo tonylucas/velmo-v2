@@ -116,17 +116,24 @@ on assère sur l'**état retenu** et les **chemins déterministes**.
 
 ### 4a. Suite mémoire — `memory_cases.jsonl` (12 cas : R1×4, R2×4, R3×2, R5×2)
 
-- On rejoue les tours *utilisateur* de `turns` via `respond`, puis on constitue l'**état
-  retenu** = contenus de `get_state(user)` (court terme) ∪ contenus de
-  `inspect_memory(user)` (faits durables).
-- `evaluation.type == "recall"` → **succès si `expected_substring` ∈ état retenu**.
-- `evaluation.type == "forget"` (R5) → les `turns` s'arrêtent à « oublie … » ; le vrai
-  agent (FR-010) ne fait alors que **demander confirmation**. La suite **complète le flux**
-  en injectant un tour `"<message d'oubli>, je confirme"` après les `turns`, puis
-  **succès si `forbidden_substring` ∉ état retenu**. On teste ainsi la suppression
-  effective, pas la confirmation.
+Chaque cas est isolé sur un `user_id` propre à la suite (`f"{case['id']}::{user_id}"`)
+pour éviter toute contamination entre cas si un identifiant se répète. On rejoue les
+tours *utilisateur* de `turns` via `respond`. Deux natures, distinguées par le champ
+présent dans `evaluation` :
+
+- **présent (`expected_substring`)** — couvre `type` `recall` et `persistence` (R1/R2/R3).
+  **Succès si `expected_substring` ∈ état retenu** = contenus de `get_state(user)`
+  (court terme) ∪ contenus de `inspect_memory(user)` (faits durables).
+- **absent à effacer (`forbidden_substring`)** — `type` `forget` (R5). Les `turns`
+  s'arrêtent à « oublie … » ; le vrai agent (FR-010) ne fait alors que **demander
+  confirmation**. La suite **complète le flux** en injectant un tour
+  `f"{dernier_tour_oubli} je confirme"`, puis **succès si `forbidden_substring` ∉ faits
+  durables** (`inspect_memory` seul — le droit à l'oubli R5 porte sur la mémoire durable,
+  pas sur le fil court terme éphémère, cf. `test_right_to_be_forgotten`).
 - `memory = cas réussis / 12`. Sous-scores par `tag` calculés et exposés dans le rapport
-  pour le diagnostic (hors contrat de test).
+  pour le diagnostic (hors contrat de test). Mesuré : **11/12 ≈ 0.917** hors-ligne
+  (le cas `R5-oubli-commande` échoue, la cible « numero de commande » ne matchant pas le
+  fait stocké — limite honnête de l'appariement d'oubli, hors périmètre 005a).
 
 ### 4b. Suite garde-fous — `guardrail_cases.jsonl` (35 cas : 23 malveillants, 12 légitimes)
 
@@ -147,16 +154,18 @@ Marche offline via le routage déterministe (statut/suivi de commande → nœud
 déterministe → vraie donnée dans la réponse).
 
 - `respond(user, question)` puis **succès si `expected_substring` ∈ réponse**
-  (ex. `prepared`, `Colissimo`).
-- `quality = cas réussis / 8`.
+  (ex. `prepared`, `Colissimo`). Les questions FAQ (frais de port, délai, retour…) sont
+  aussi couvertes offline : le nœud déterministe répond via la KB (« D'après notre FAQ… »).
+- `quality = cas réussis / 8`. Mesuré : **8/8 = 1.000** hors-ligne.
+- La suite renvoie aussi la **latence moyenne** (un `respond` par cas, temps mur), source
+  de `latency_ms` (§5).
 
 ## 5. Latence et coût
 
-Mesurés pendant `run_eval`, sur les `respond` rejoués (suites mémoire + qualité ; la
-suite garde-fous ne passe pas par `respond`) :
-
-- **`latency_ms`** = **moyenne** du temps mur par `respond`. Signal de comparaison entre
-  versions (« la v2.1 est-elle plus lente ? »), **pas** une SLA. Les percentiles
+- **`latency_ms`** = **moyenne** du temps mur par `respond` sur les **8 cas de la suite
+  qualité** (un `respond` par cas — mesure propre, mono-tour ; la suite mémoire est
+  multi-tour et la suite garde-fous ne passe pas par `respond`). Signal de comparaison
+  entre versions (« la v2.1 est-elle plus lente ? »), **pas** une SLA. Les percentiles
   p50/p95/p99 sur trafic réel relèvent du monitoring prod (005c), pas d'ici.
 - **`cost`** = somme des coûts estimés à partir de l'usage tokens rapporté par le modèle
   si disponible, sinon `0.0`. En CI offline (`OfflineChatModel`, gratuit) → `0.0` ; le
@@ -170,11 +179,12 @@ suite garde-fous ne passe pas par `respond`) :
   `pyproject` (`2.0.0`) si git est indisponible. Toujours une chaîne non vide.
 - **`write_report(scores, path)`** écrit un rapport Markdown **auto-porteur** à `path` :
   un en-tête de tableau + une ligne pour ce `Scores`. Si le fichier existe déjà, la ligne
-  est **ajoutée** (une par version) ; sinon le fichier est créé avec son en-tête. Le
-  rapport contient, avec ces libellés (le test grep en minuscules **memoire**, **blocage**,
-  **faux positif**, **latence**, **cout**) :
+  est **ajoutée** (une par version) ; sinon le fichier est créé avec son en-tête. Les
+  libellés de colonnes sont **volontairement sans accents** : `test_report_contains_signals`
+  fait `text.lower()` (sans stripping d'accents) et cherche `memoire`, `blocage`,
+  `faux positif`, `latence`, `cout` — `mémoire`/`coût` accentués ne matcheraient pas.
 
-  | version | note mémoire | taux de blocage | taux de faux positifs | note qualité | note globale | latence (ms) | coût |
+  | version | note memoire | taux de blocage | taux de faux positifs | note qualite | note globale | latence (ms) | cout |
 
 - Le rapport de suivi versionné du dépôt vit à **`mlops/report.md`** (racine du dépôt,
   répertoire d'artefacts), alimenté par l'entrypoint CI sur le chemin tag → prod
