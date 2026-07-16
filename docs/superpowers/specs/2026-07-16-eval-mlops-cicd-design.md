@@ -70,17 +70,19 @@ en une seule instance le tolère). D'où une persistance **hybride** :
 | **App** `velmo2-tony` | démo Streamlit | Container App, ingress **externe** :8000 | stateless |
 | **Postgres** `velmo2-tony-pg` | catalogue/clients/commandes | Container App `postgres:16-alpine`, ingress **interne** TCP :5432 | **éphémère → re-seed au démarrage** (données de seed déterministes, rien de perdu) |
 | **Chroma** `velmo2-tony-chroma` | `velmo_memory` + `velmo_faq` | Container App `chromadb/chroma:0.5.23`, ingress **interne** HTTP :8000, 1 réplica | **persistant** via Azure Files `chromadata` (là où la mémoire long terme R2/R4 a de la valeur) |
-| **Content Safety** `velmo2-tony-safety` | garde-fous prod (modération entrée) | Cognitive Services `ContentSafety` | — |
+| **Content Safety** (existante) | garde-fous prod (modération entrée) | ressource Azure AI **déjà provisionnée** (`eagwu-0283-resource`, partagée avec Kimi) — **réutilisée**, pas recréée | — |
 | **Storage** `storagetonylucas` | file share `chromadata` | Storage Account (LRS) | héberge le volume Chroma |
 
 Tout dans le RG `tlucasRG`, l'environnement ACA `Velmo2Tony`, région `swedencentral`.
 Networking interne ACA : l'app joint Postgres et Chroma par le DNS interne de
 l'environnement (`<app>.internal.<defaultDomain>`), jamais exposés publiquement.
 
-**Content Safety** : la ressource est créée (`Microsoft.CognitiveServices` disponible)
-et câblée via `AZURE_CONTENT_SAFETY_*`. Le moteur reste néanmoins **résilient** : si ces
-variables sont absentes, les garde-fous se rabattent sur la détection déterministe locale
-(déjà géré par `guardrails/content_safety.py`) — propriété de robustesse, plus un plan B forcé.
+**Content Safety** : **rien à créer** — l'utilisateur dispose déjà d'une ressource Azure AI
+(`eagwu-0283-resource`, celle qui sert aussi Kimi) avec son endpoint et sa clé dans `.env`
+(`AZURE_CONTENT_SAFETY_ENDPOINT` / `AZURE_CONTENT_SAFETY_KEY`). On les **réutilise** tels quels
+(secrets GitHub + env de l'app). Le moteur reste **résilient** : si ces variables sont absentes,
+les garde-fous se rabattent sur la détection déterministe locale (déjà géré par
+`guardrails/content_safety.py`).
 
 ### 3a. Schéma
 
@@ -126,7 +128,7 @@ Injectées via `az containerapp update` (secrets pour le sensible, env-vars pour
 - `DB_URL=postgresql+psycopg://app:<pgpass>@velmo2-tony-pg.internal.<domain>:5432/velmo`
 - `CHROMA_URL=http://velmo2-tony-chroma.internal.<domain>:8000`
 - `AZURE_AI_INFERENCE_ENDPOINT`, `AZURE_AI_INFERENCE_API_KEY` (secret), `AZURE_AI_INFERENCE_MODEL`
-- `AZURE_CONTENT_SAFETY_ENDPOINT`, `AZURE_CONTENT_SAFETY_KEY` (secret) — si créé
+- `AZURE_CONTENT_SAFETY_ENDPOINT`, `AZURE_CONTENT_SAFETY_KEY` (secret) — réutilisés depuis `.env`
 - `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` (embeddings depuis le modèle **baké dans
   l'image**, cf. §5) — jamais de contact HuggingFace au runtime.
 
@@ -209,11 +211,10 @@ az containerapp create -g $RG -n velmo2-tony-pg --environment $ENV \
 # options simples. Ingress interne HTTP :8000, joignable seulement par l'app.
 az containerapp create -g $RG -n velmo2-tony-chroma --environment $ENV --yaml chroma-app.yaml
 
-# === 4. Content Safety (le service Azure de modération des messages) ===
-# Crée la ressource qui analysera les messages entrants (haine, injection…). --yes = ne
-# pas redemander confirmation. Renvoie un endpoint + une clé qu'on donnera à l'app.
-az cognitiveservices account create -g $RG -n velmo2-tony-safety \
-  --kind ContentSafety --sku S0 -l $LOC --yes
+# === 4. Content Safety : RIEN À FAIRE ===
+# Tu as déjà une ressource Azure AI (eagwu-0283-resource, celle de Kimi) avec son
+# endpoint + sa clé dans ton .env (AZURE_CONTENT_SAFETY_ENDPOINT / _KEY). On les
+# réutilisera directement — aucune ressource à créer ici.
 
 # === 5. Un "compte robot" pour que GitHub puisse déployer tout seul ===
 # Crée un service principal (une identité machine) avec le droit de modifier les
@@ -224,8 +225,9 @@ az ad sp create-for-rbac --name velmo2-deployer --role contributor \
 ```
 
 Livrable : les valeurs à me transmettre / à mettre en secrets GitHub — endpoints + clés
-Kimi et Content Safety, `<domain>` (le suffixe DNS interne de l'environnement), le mot de
-passe Postgres, et le JSON du service principal.
+Kimi et Content Safety (**déjà dans ton `.env`, à recopier en secrets**), `<domain>` (le
+suffixe DNS interne de l'environnement), le mot de passe Postgres, et le JSON du service
+principal.
 
 ### Phase 1 — MOI (code + CI, via le plan d'implémentation)
 
