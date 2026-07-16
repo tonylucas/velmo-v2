@@ -3,7 +3,7 @@
 # Postgres is ephemeral (re-seeded each start); Chroma is persistent (seed FAQ once).
 set -euo pipefail
 
-echo "Waiting for Postgres at ${DB_URL%%\?*} ..."
+echo "Waiting for Postgres..."
 until uv run python -c "import os, sqlalchemy as sa; sa.create_engine(os.environ['DB_URL']).connect().close()" 2>/dev/null; do
   sleep 2
 done
