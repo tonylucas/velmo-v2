@@ -36,32 +36,41 @@ az containerapp env storage set -g "$RG" -n "$ENV" --storage-name chromastore \
 echo "==> 2/4  Postgres (conteneur, éphémère, réseau interne uniquement)"
 # Base relationnelle dans un conteneur (la version managée est bloquée sur l'abonnement).
 # Pas de disque : les données sont recréées au démarrage par le seed (déterministes).
-az containerapp create -g "$RG" -n velmo2-tony-pg --environment "$ENV" \
-  --image postgres:16-alpine --transport tcp --ingress internal \
-  --target-port 5432 --exposed-port 5432 --min-replicas 1 --max-replicas 1 \
-  --cpu 0.5 --memory 1.0Gi --secrets "pgpass=$PGPASS" \
-  --env-vars POSTGRES_USER=app POSTGRES_PASSWORD=secretref:pgpass POSTGRES_DB=velmo -o none
+# Idempotent : on ne recrée pas si l'app existe déjà.
+if ! az containerapp show -g "$RG" -n velmo2-tony-pg -o none 2>/dev/null; then
+  az containerapp create -g "$RG" -n velmo2-tony-pg --environment "$ENV" \
+    --image postgres:16-alpine --transport tcp --ingress internal \
+    --target-port 5432 --exposed-port 5432 --min-replicas 1 --max-replicas 1 \
+    --cpu 0.5 --memory 1.0Gi --secrets "pgpass=$PGPASS" \
+    --env-vars POSTGRES_USER=app POSTGRES_PASSWORD=secretref:pgpass POSTGRES_DB=velmo -o none
+fi
 
 echo "==> 3/4  Chroma (conteneur, avec le disque persistant branché)"
-# Chroma a besoin d'un volume monté ; ça passe par un petit fichier YAML qu'on
-# génère ici avec l'identifiant réel de l'environnement.
+# Chroma a besoin d'un volume monté ; ça passe par un fichier YAML au format "ressource
+# complète" (location/name/type + properties). Ingress TCP :8000 (comme Postgres) pour
+# que CHROMA_URL=http://...:8000 reste cohérent (en HTTP interne, ACA remapperait sur :80).
 ENV_ID=$(az containerapp env show -g "$RG" -n "$ENV" --query id -o tsv)
 TMP=$(mktemp)
 cat > "$TMP" <<YAML
+location: $LOC
+name: velmo2-tony-chroma
+type: Microsoft.App/containerApps
 properties:
-  environmentId: $ENV_ID
+  managedEnvironmentId: $ENV_ID
   configuration:
+    activeRevisionsMode: Single
     ingress:
       external: false
-      transport: http
+      transport: Tcp
       targetPort: 8000
+      exposedPort: 8000
   template:
     containers:
-      - name: chroma
-        image: chromadb/chroma:0.5.23
+      - image: chromadb/chroma:0.5.23
+        name: chroma
         resources:
           cpu: 0.5
-          memory: 1.0Gi
+          memory: "1.0Gi"
         volumeMounts:
           - volumeName: chromadata
             mountPath: /chroma/chroma
@@ -73,7 +82,9 @@ properties:
         storageType: AzureFile
         storageName: chromastore
 YAML
-az containerapp create -g "$RG" -n velmo2-tony-chroma --yaml "$TMP" -o none
+if ! az containerapp show -g "$RG" -n velmo2-tony-chroma -o none 2>/dev/null; then
+  az containerapp create -g "$RG" -n velmo2-tony-chroma --yaml "$TMP" -o none
+fi
 rm -f "$TMP"
 
 echo "==> 4/4  Compte robot pour que GitHub déploie tout seul (service principal)"
