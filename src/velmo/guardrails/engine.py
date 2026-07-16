@@ -80,8 +80,20 @@ class GuardrailEngine:
             if category:
                 return self._block(category, "input", trace)
 
+        # Scan and mask secrets/PII before any external call so raw credentials
+        # never leave the process: the moderator below runs on `masked`, not on
+        # the original message.
+        masked, found = scan_secrets(message)
+        if trace is not None:
+            trace.add(
+                "guardrail_in",
+                "scan_secrets",
+                "match" if found else "pass",
+                **({"category": "pii", "sanitized": masked} if found else {}),
+            )
+
         if self._moderator is not None:  # prod reinforcement, never hit offline
-            if self._moderator.shield(message):
+            if self._moderator.shield(masked):
                 if trace is not None:
                     trace.add(
                         "guardrail_in",
@@ -92,7 +104,7 @@ class GuardrailEngine:
                 return self._block("prompt_injection", "input", trace)
             if trace is not None:
                 trace.add("guardrail_in", "content_safety.shield", "pass")
-            blocked = self._moderator.analyze(message)
+            blocked = self._moderator.analyze(masked)
             if trace is not None:
                 trace.add(
                     "guardrail_in",
@@ -103,14 +115,6 @@ class GuardrailEngine:
             if blocked:
                 return self._block(sorted(blocked)[0], "input", trace)
 
-        masked, found = scan_secrets(message)
-        if trace is not None:
-            trace.add(
-                "guardrail_in",
-                "scan_secrets",
-                "match" if found else "pass",
-                **({"category": "pii", "sanitized": masked} if found else {}),
-            )
         if found:
             self._log("pii", "input", "mask", "masked sensitive data")
             if trace is not None:
