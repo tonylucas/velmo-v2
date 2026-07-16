@@ -64,6 +64,9 @@ DOMAIN=$(az containerapp env show -g "$RG" -n "$ENV" --query properties.defaultD
 cat <<EOF
 
 ===================== PROVISIONING TERMINÉ =====================
+(Le DB_URL ci-dessous contient le mot de passe en clair : ne le partage pas, et pense
+ à effacer l'historique/le scrollback de ce terminal après usage.)
+
 Domaine interne de l'environnement : $DOMAIN
 
 À utiliser comme config de l'app (au déploiement) :
