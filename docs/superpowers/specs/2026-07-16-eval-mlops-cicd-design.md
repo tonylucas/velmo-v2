@@ -162,32 +162,70 @@ Injectées via `az containerapp update` (secrets pour le sensible, env-vars pour
 Déjà fait : app `velmo2-tony` (2 Gio), env `Velmo2Tony`, storage `storagetonylucas`.
 Reste (je fournirai le bloc exact au moment de l'implémentation ; forme) :
 
+> À lire d'abord : on ne clique plus dans le portail, on tape des commandes `az`
+> (l'outil en ligne de commande d'Azure) dans **Azure Cloud Shell** (le terminal
+> intégré au portail, déjà connecté à ton compte). Chaque commande crée ou configure
+> une ressource. Les `VARIABLE=valeur` du début évitent de retaper les noms partout.
+
 ```bash
-RG=tlucasRG; ENV=Velmo2Tony; LOC=swedencentral; STG=storagetonylucas
-# 1. File share Chroma + rattachement à l'environnement
+# --- Raccourcis : nos noms de ressources, pour ne pas les répéter à chaque ligne ---
+RG=tlucasRG            # Resource Group = le "dossier" qui regroupe toutes nos ressources
+ENV=Velmo2Tony        # l'environnement Container Apps (le "réseau privé" commun à nos conteneurs)
+LOC=swedencentral     # la région Azure (le datacenter) où tout est hébergé
+STG=storagetonylucas  # le compte de stockage (le "disque dur externe" persistant)
+
+# === 1. Le disque persistant de Chroma ===
+# Récupère la clé d'accès du compte de stockage (comme un mot de passe du disque).
 KEY=$(az storage account keys list -g $RG -n $STG --query "[0].value" -o tsv)
+
+# Crée un "dossier persistant" (file share) de 8 Go nommé chromadata sur ce disque.
+# C'est là que Chroma écrira la mémoire long terme, pour qu'elle survive aux redémarrages.
 az storage share-rm create -g $RG --storage-account $STG -n chromadata --quota 8
+
+# Déclare ce dossier à l'environnement ACA sous le nom "chromastore",
+# pour qu'un conteneur puisse le "brancher" ensuite (voir étape 3).
 az containerapp env storage set -g $RG -n $ENV --storage-name chromastore \
   --azure-file-account-name $STG --azure-file-account-key "$KEY" \
   --azure-file-share-name chromadata --access-mode ReadWrite
-# 2. Postgres (éphémère, TCP interne)
+
+# === 2. La base Postgres (dans un conteneur, éphémère) ===
+# Lance l'image officielle postgres:16 comme Container App.
+#   --ingress internal + --transport tcp : joignable UNIQUEMENT par nos autres conteneurs
+#     (jamais depuis Internet), en TCP sur le port 5432.
+#   min/max-replicas 1 : une seule instance (une base = un seul écrivain).
+#   --secrets pgpass=... : range le mot de passe de façon chiffrée (remplace <motdepasse>).
+#   secretref:pgpass : le conteneur lit le mot de passe depuis ce secret.
+# Pas de disque persistant ici : les données (clients, commandes) sont recréées au
+# démarrage par notre seed — elles sont déterministes, donc rien n'est perdu.
 az containerapp create -g $RG -n velmo2-tony-pg --environment $ENV \
   --image postgres:16-alpine --transport tcp --ingress internal \
   --target-port 5432 --exposed-port 5432 --min-replicas 1 --max-replicas 1 \
   --cpu 0.5 --memory 1.0Gi --secrets pgpass=<motdepasse> \
   --env-vars POSTGRES_USER=app POSTGRES_PASSWORD=secretref:pgpass POSTGRES_DB=velmo
-# 3. Chroma (persistant) — via YAML (volume mount), fourni à l'implémentation
+
+# === 3. Chroma (base vectorielle, avec le disque persistant branché) ===
+# Ici on passe par un fichier YAML (chroma-app.yaml, que je fournirai) car "brancher un
+# volume" (le dossier chromastore de l'étape 1 sur /chroma/chroma) ne se fait pas en
+# options simples. Ingress interne HTTP :8000, joignable seulement par l'app.
 az containerapp create -g $RG -n velmo2-tony-chroma --environment $ENV --yaml chroma-app.yaml
-# 4. Content Safety (optionnel ; ignorer si le fournisseur est bloqué)
+
+# === 4. Content Safety (le service Azure de modération des messages) ===
+# Crée la ressource qui analysera les messages entrants (haine, injection…). --yes = ne
+# pas redemander confirmation. Renvoie un endpoint + une clé qu'on donnera à l'app.
 az cognitiveservices account create -g $RG -n velmo2-tony-safety \
   --kind ContentSafety --sku S0 -l $LOC --yes
-# 5. Service principal pour la CI
+
+# === 5. Un "compte robot" pour que GitHub puisse déployer tout seul ===
+# Crée un service principal (une identité machine) avec le droit de modifier les
+# ressources du groupe. Le JSON renvoyé (--sdk-auth) se colle dans un secret GitHub
+# nommé AZURE_CREDENTIALS : c'est ce qui autorise la CI à déployer sans ton mot de passe.
 az ad sp create-for-rbac --name velmo2-deployer --role contributor \
   --scopes /subscriptions/<sub>/resourceGroups/$RG --sdk-auth   # -> AZURE_CREDENTIALS
 ```
 
-Livrable : les valeurs (endpoints/clés Kimi + Content Safety, `<domain>`, mot de passe
-Postgres, JSON du SP).
+Livrable : les valeurs à me transmettre / à mettre en secrets GitHub — endpoints + clés
+Kimi et Content Safety, `<domain>` (le suffixe DNS interne de l'environnement), le mot de
+passe Postgres, et le JSON du service principal.
 
 ### Phase 1 — MOI (code + CI, via le plan d'implémentation)
 
