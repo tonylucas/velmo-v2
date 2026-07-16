@@ -14,6 +14,8 @@ import hashlib
 import os
 from typing import Protocol
 
+from velmo.kb_store import parse_chroma_url
+
 from .facts import Fact, is_semantic
 
 
@@ -144,10 +146,9 @@ def get_fact_store() -> FactStore:
         from chromadb.utils import embedding_functions
     except ImportError:
         return LocalFactStore()
-    from urllib.parse import urlparse
 
-    parsed = urlparse(os.environ["CHROMA_URL"])
-    client = chromadb.HttpClient(host=parsed.hostname or "localhost", port=parsed.port or 8000)
+    host, port = parse_chroma_url()
+    client = chromadb.HttpClient(host=host, port=port)
     embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
     )

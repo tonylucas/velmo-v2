@@ -15,6 +15,16 @@ from urllib.parse import urlparse
 KB_DOCS_DIR = Path(__file__).resolve().parents[2] / "kb" / "docs"
 
 
+def parse_chroma_url(url: str | None = None) -> tuple[str, int]:
+    """Parse CHROMA_URL (or the given url) into (host, port).
+
+    Defaults to localhost:8000. Single source of truth for the three call sites
+    (kb_store, fact_store, seed_kb) so they cannot drift apart.
+    """
+    parsed = urlparse(url or os.environ["CHROMA_URL"])
+    return parsed.hostname or "localhost", parsed.port or 8000
+
+
 def _strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
@@ -84,8 +94,8 @@ def get_kb():
     except ImportError:
         return LocalKB()
 
-    parsed = urlparse(os.environ["CHROMA_URL"])
-    client = chromadb.HttpClient(host=parsed.hostname or "localhost", port=parsed.port or 8000)
+    host, port = parse_chroma_url()
+    client = chromadb.HttpClient(host=host, port=port)
     embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
     )

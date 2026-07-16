@@ -13,16 +13,29 @@ KB_DOCS_DIR = Path(__file__).resolve().parent.parent / "kb" / "docs"
 
 
 def main() -> None:
+    import argparse
+
     import chromadb
     from chromadb.utils import embedding_functions
 
-    client = chromadb.HttpClient(
-        host=os.getenv("CHROMA_HOST", "chroma"), port=int(os.getenv("CHROMA_PORT", "8000"))
+    from velmo.kb_store import parse_chroma_url
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--if-empty", action="store_true", help="skip when velmo_faq already has documents"
     )
+    args = parser.parse_args()
+
+    host, port = parse_chroma_url()
+    client = chromadb.HttpClient(host=host, port=port)
     embedder = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=os.getenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-small")
     )
     collection = client.get_or_create_collection("velmo_faq", embedding_function=embedder)
+
+    if args.if_empty and collection.count() > 0:
+        print("FAQ already ingested — skipping.")
+        return
 
     docs, ids, metas = [], [], []
     for path in sorted(KB_DOCS_DIR.glob("*.md")):
