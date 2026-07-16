@@ -59,28 +59,65 @@ CI seul.
 ## 3. Topologie Azure (hybride, adaptée à l'abonnement bridé)
 
 L'abonnement `REMOTE_WCS_211537_DEV IA` **interdit** le fournisseur
-`Microsoft.DBforPostgreSQL` (pas de base managée) ; `Microsoft.App` et
-`Microsoft.Storage` sont disponibles. Postgres et Chroma tournent donc en **Container
-Apps**. Or Azure Files (SMB) ne fournit pas le verrouillage de fichiers fiable dont
-Postgres a besoin (Chroma en une seule instance le tolère). D'où une persistance
-**hybride** :
+`Microsoft.DBforPostgreSQL` (pas de base managée) ; `Microsoft.App`,
+`Microsoft.Storage` et `Microsoft.CognitiveServices` (Content Safety, vérifié) sont
+disponibles. Postgres et Chroma tournent donc en **Container Apps**. Or Azure Files
+(SMB) ne fournit pas le verrouillage de fichiers fiable dont Postgres a besoin (Chroma
+en une seule instance le tolère). D'où une persistance **hybride** :
 
 | Composant | Rôle | Hébergement | Persistance |
 |---|---|---|---|
 | **App** `velmo2-tony` | démo Streamlit | Container App, ingress **externe** :8000 | stateless |
 | **Postgres** `velmo2-tony-pg` | catalogue/clients/commandes | Container App `postgres:16-alpine`, ingress **interne** TCP :5432 | **éphémère → re-seed au démarrage** (données de seed déterministes, rien de perdu) |
 | **Chroma** `velmo2-tony-chroma` | `velmo_memory` + `velmo_faq` | Container App `chromadb/chroma:0.5.23`, ingress **interne** HTTP :8000, 1 réplica | **persistant** via Azure Files `chromadata` (là où la mémoire long terme R2/R4 a de la valeur) |
-| **Content Safety** `velmo2-tony-safety` | garde-fous prod | Cognitive Services `ContentSafety` | — (optionnel : absent → **fallback déterministe**) |
+| **Content Safety** `velmo2-tony-safety` | garde-fous prod (modération entrée) | Cognitive Services `ContentSafety` | — |
 | **Storage** `storagetonylucas` | file share `chromadata` | Storage Account (LRS) | héberge le volume Chroma |
 
 Tout dans le RG `tlucasRG`, l'environnement ACA `Velmo2Tony`, région `swedencentral`.
 Networking interne ACA : l'app joint Postgres et Chroma par le DNS interne de
 l'environnement (`<app>.internal.<defaultDomain>`), jamais exposés publiquement.
 
-**Content Safety optionnel** : si `Microsoft.CognitiveServices` est aussi bloqué,
-on n'ajoute pas la ressource ; les garde-fous prod se rabattent sur le moteur
-déterministe (`AZURE_CONTENT_SAFETY_*` absents → fallback, déjà géré par
-`guardrails/content_safety.py`). L'app tourne quand même.
+**Content Safety** : la ressource est créée (`Microsoft.CognitiveServices` disponible)
+et câblée via `AZURE_CONTENT_SAFETY_*`. Le moteur reste néanmoins **résilient** : si ces
+variables sont absentes, les garde-fous se rabattent sur la détection déterministe locale
+(déjà géré par `guardrails/content_safety.py`) — propriété de robustesse, plus un plan B forcé.
+
+### 3a. Schéma
+
+```mermaid
+flowchart TB
+    User([Utilisateur navigateur]) -->|HTTPS public| App
+
+    subgraph RG["Resource Group: tlucasRG — swedencentral"]
+        subgraph ENV["Environnement ACA: Velmo2Tony"]
+            App["Container App: velmo2-tony<br/>Streamlit (notre image)<br/>ingress EXTERNE :8000"]
+            PG["Container App: velmo2-tony-pg<br/>postgres:16-alpine<br/>ingress INTERNE TCP :5432<br/>éphémère → re-seed au démarrage"]
+            Chroma["Container App: velmo2-tony-chroma<br/>chromadb/chroma:0.5.23<br/>ingress INTERNE HTTP :8000<br/>1 réplica"]
+        end
+
+        Safety["Content Safety: velmo2-tony-safety<br/>(sinon fallback déterministe)"]
+
+        subgraph STG["Storage Account: storagetonylucas"]
+            Share["File share: chromadata<br/>(Azure Files)"]
+        end
+    end
+
+    Kimi["Azure AI Inference<br/>Kimi-K2.6 (LLM)"]
+
+    App -->|"DB_URL<br/>...pg.internal...:5432"| PG
+    App -->|"CHROMA_URL<br/>...chroma.internal...:8000"| Chroma
+    App -->|"garde-fous (modération)"| Safety
+    App -->|"génération réponses"| Kimi
+    Chroma -->|"volume monté<br/>/chroma/chroma → persistant"| Share
+
+    classDef ext fill:#2d6,stroke:#161,color:#000
+    classDef int fill:#69f,stroke:#237,color:#fff
+    classDef store fill:#fa3,stroke:#a60,color:#000
+    class App ext
+    class PG,Chroma int
+    class Share,STG store
+    class Safety,Kimi ext
+```
 
 ## 4. Câblage runtime (variables d'env de l'app)
 
@@ -167,7 +204,9 @@ invalidation) et `deploy.yml` (tag→build→update→révision), doc rollback.
 
 ## 7. Dégradation gracieuse (off-ramp)
 
-- **Content Safety bloqué** → ressource non créée, garde-fous déterministes (l'app tourne).
+- **Content Safety indisponible** (panne, quota) → `AZURE_CONTENT_SAFETY_*` retirés,
+  garde-fous déterministes locaux (l'app tourne). *(Le fournisseur n'est pas bloqué sur
+  l'abonnement : la ressource est bien créée ; c'est un filet de résilience.)*
 - **Chroma sur Azure Files instable** → repli sur Chroma éphémère (perte des faits durables
   au redémarrage, comme Postgres) sans changer le reste.
 - **Déploiement Azure abandonné** → supprimer `deploy.yml` ; le cœur CI (§2a) reste entier.
