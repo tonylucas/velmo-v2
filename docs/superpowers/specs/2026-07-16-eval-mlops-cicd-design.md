@@ -56,22 +56,32 @@ Auth GitHub → Azure : **secret de service principal** (`AZURE_CREDENTIALS`, JS
 durcissement différé. Isolé dans `deploy.yml` : supprimer ce fichier = revenir au cœur
 CI seul.
 
+> **Réalité sur l'abonnement de formation actuel : déploiement MANUEL.** L'attribution de
+> rôle (`roleAssignments/write`) y est **interdite** → impossible de créer un service
+> principal, donc `deploy.yml` ne peut pas s'activer ici. `deploy.yml` reste livré (prêt
+> pour un abonnement non bridé), mais le déploiement se fait à la main depuis la session
+> `az` de l'utilisateur (qui a les droits de gérer les Container Apps) :
+> `az containerapp up --source . --name velmo2-tony --resource-group tlucasRG`.
+> Le rollback par révisions reste identique. C'est la même « couche détachable » : le cœur
+> CI (§2a) est intact ; seul le *déclencheur* du deploy change (manuel vs tag).
+
 ## 3. Topologie Azure (hybride, adaptée à l'abonnement bridé)
 
-L'abonnement `REMOTE_WCS_211537_DEV IA` **interdit** le fournisseur
-`Microsoft.DBforPostgreSQL` (pas de base managée) ; `Microsoft.App`,
-`Microsoft.Storage` et `Microsoft.CognitiveServices` (Content Safety, vérifié) sont
-disponibles. Postgres et Chroma tournent donc en **Container Apps**. Or Azure Files
-(SMB) ne fournit pas le verrouillage de fichiers fiable dont Postgres a besoin (Chroma
-en une seule instance le tolère). D'où une persistance **hybride** :
+L'abonnement `REMOTE_WCS_211537_DEV IA` (compte de formation) est bridé, ce qui a façonné
+la topologie réelle : `Microsoft.DBforPostgreSQL` **interdit** (pas de base managée →
+Postgres en conteneur) ; l'attribution de rôles (`roleAssignments/write`) **interdite**
+(→ pas de service principal, donc **déploiement manuel**, cf. §2b) ; le montage de volume
+Azure Files via CLI **échoue** (bug de `az containerapp … --yaml`) → Chroma tourne **sans
+volume**, en éphémère. `Microsoft.App`, `Microsoft.Storage` et `Microsoft.CognitiveServices`
+sont disponibles. Topologie effective :
 
 | Composant | Rôle | Hébergement | Persistance |
 |---|---|---|---|
 | **App** `velmo2-tony` | démo Streamlit | Container App, ingress **externe** :8000 | stateless |
-| **Postgres** `velmo2-tony-pg` | catalogue/clients/commandes | Container App `postgres:16-alpine`, ingress **interne** TCP :5432 | **éphémère → re-seed au démarrage** (données de seed déterministes, rien de perdu) |
-| **Chroma** `velmo2-tony-chroma` | `velmo_memory` + `velmo_faq` | Container App `chromadb/chroma:0.5.23`, ingress **interne** HTTP :8000, 1 réplica | **persistant** via Azure Files `chromadata` (là où la mémoire long terme R2/R4 a de la valeur) |
-| **Content Safety** (existante) | garde-fous prod (modération entrée) | ressource Azure AI **déjà provisionnée** (`eagwu-0283-resource`, partagée avec Kimi) — **réutilisée**, pas recréée | — |
-| **Storage** `storagetonylucas` | file share `chromadata` | Storage Account (LRS) | héberge le volume Chroma |
+| **Postgres** `velmo2-tony-pg` | catalogue/clients/commandes | Container App `postgres:16-alpine`, ingress **interne** TCP :5432 | **éphémère → re-seed au démarrage** (données déterministes, rien de perdu) |
+| **Chroma** `velmo2-tony-chroma` | `velmo_memory` + `velmo_faq` | Container App `chromadb/chroma:0.5.23`, ingress **interne** TCP :8000, 1 réplica | **éphémère** (persistent au sein d'une session via `minReplicas=1` ; volume Azure Files **branchable via le portail** plus tard, cf. §7) |
+| **Content Safety** (existante) | garde-fous prod (modération entrée) | ressource Azure AI **déjà provisionnée** (`eagwu-0283-resource`, partagée avec Kimi) — **réutilisée** | — |
+| **Storage** `storagetonylucas` | file share `chromadata` | Storage Account (LRS) | créé, **non branché** (volume Chroma optionnel via portail) |
 
 Tout dans le RG `tlucasRG`, l'environnement ACA `Velmo2Tony`, région `swedencentral`.
 Networking interne ACA : l'app joint Postgres et Chroma par le DNS interne de
@@ -94,23 +104,20 @@ flowchart TB
         subgraph ENV["Environnement ACA: Velmo2Tony"]
             App["Container App: velmo2-tony<br/>Streamlit (notre image)<br/>ingress EXTERNE :8000"]
             PG["Container App: velmo2-tony-pg<br/>postgres:16-alpine<br/>ingress INTERNE TCP :5432<br/>éphémère → re-seed au démarrage"]
-            Chroma["Container App: velmo2-tony-chroma<br/>chromadb/chroma:0.5.23<br/>ingress INTERNE HTTP :8000<br/>1 réplica"]
+            Chroma["Container App: velmo2-tony-chroma<br/>chromadb/chroma:0.5.23<br/>ingress INTERNE TCP :8000<br/>1 réplica — éphémère"]
         end
 
-        Safety["Content Safety: velmo2-tony-safety<br/>(sinon fallback déterministe)"]
-
-        subgraph STG["Storage Account: storagetonylucas"]
+        subgraph STG["Storage: storagetonylucas (créé, non branché)"]
             Share["File share: chromadata<br/>(Azure Files)"]
         end
     end
 
-    Kimi["Azure AI Inference<br/>Kimi-K2.6 (LLM)"]
+    AI["Azure AI — ressource existante (eagwu-0283)<br/>Kimi-K2.6 (LLM) + Content Safety"]
 
     App -->|"DB_URL<br/>...pg.internal...:5432"| PG
     App -->|"CHROMA_URL<br/>...chroma.internal...:8000"| Chroma
-    App -->|"garde-fous (modération)"| Safety
-    App -->|"génération réponses"| Kimi
-    Chroma -->|"volume monté<br/>/chroma/chroma → persistant"| Share
+    App -->|"génération + garde-fous (modération)"| AI
+    Chroma -.->|"persistance différée<br/>(à brancher via le portail)"| Share
 
     classDef ext fill:#2d6,stroke:#161,color:#000
     classDef int fill:#69f,stroke:#237,color:#fff
@@ -118,7 +125,7 @@ flowchart TB
     class App ext
     class PG,Chroma int
     class Share,STG store
-    class Safety,Kimi ext
+    class AI ext
 ```
 
 ## 4. Câblage runtime (variables d'env de l'app)
