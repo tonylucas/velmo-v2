@@ -34,21 +34,28 @@ les variables d'environnement de l'app, puis déploie — depuis ta session `az`
 ```bash
 # <domain> = az containerapp env show -g tlucasRG -n Velmo2Tony --query properties.defaultDomain -o tsv
 
-# 1. Config de l'app (une fois ; env + secrets sont portés d'une révision à l'autre).
-az containerapp update -g tlucasRG -n velmo2-tony \
-  --secrets azkey=<kimi-key> pgpass=<pgpass> safetykey=<safety-key> \
-  --set-env-vars \
-    DB_URL="postgresql+psycopg://app:<pgpass>@velmo2-tony-pg.internal.<domain>:5432/velmo" \
-    CHROMA_URL="http://velmo2-tony-chroma.internal.<domain>:8000" \
-    AZURE_AI_INFERENCE_ENDPOINT="<kimi-endpoint>" \
-    AZURE_AI_INFERENCE_MODEL="Kimi-K2.6" \
-    AZURE_AI_INFERENCE_API_KEY=secretref:azkey \
-    AZURE_CONTENT_SAFETY_ENDPOINT="<safety-endpoint>" \
-    AZURE_CONTENT_SAFETY_KEY=secretref:safetykey \
-    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+# 1a. Poser les secrets (sensibles). `secret set`, PAS `update --secrets`.
+#     DB_URL est mis en secret car il contient le mot de passe Postgres.
+az containerapp secret set -g tlucasRG -n velmo2-tony --secrets \
+  dburl="postgresql+psycopg://app:<pgpass>@velmo2-tony-pg.internal.<domain>:5432/velmo" \
+  azkey=<kimi-key> \
+  safetykey=<safety-key>
+
+# 1b. Poser les variables d'env (les sensibles pointent vers les secrets ci-dessus).
+#     env + secrets sont portés d'une révision à l'autre.
+az containerapp update -g tlucasRG -n velmo2-tony --set-env-vars \
+  DB_URL=secretref:dburl \
+  CHROMA_URL="http://velmo2-tony-chroma.internal.<domain>:8000" \
+  AZURE_AI_INFERENCE_ENDPOINT="<kimi-endpoint>" \
+  AZURE_AI_INFERENCE_MODEL="Kimi-K2.6" \
+  AZURE_AI_INFERENCE_API_KEY=secretref:azkey \
+  AZURE_CONTENT_SAFETY_ENDPOINT="<safety-endpoint>" \
+  AZURE_CONTENT_SAFETY_KEY=secretref:safetykey \
+  HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 # 2. Build + push + déploiement (crée un ACR au premier appel).
-az containerapp up --source . --name velmo2-tony --resource-group tlucasRG
+az containerapp up --source . --name velmo2-tony --resource-group tlucasRG \
+  --target-port 8000 --ingress external
 ```
 
 Le build télécharge le modèle d'embedding depuis HuggingFace (il faut que HF soit joignable
