@@ -1,0 +1,35 @@
+# Build the demo image on GitHub's amd64 runners and push it to GHCR.
+# Used when the Azure subscription forbids ACR (no Microsoft.ContainerRegistry):
+# GitHub builds the linux/amd64 image (correct arch for ACA, reaches HuggingFace for
+# the embedding-model bake), then the Container App pulls it from ghcr.io.
+# Trigger manually: gh workflow run image.yml -f tag=v1 --ref <branch>
+name: image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (e.g. v1)"
+        default: v1
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/${{ github.repository_owner }}/velmo:${{ inputs.tag }}

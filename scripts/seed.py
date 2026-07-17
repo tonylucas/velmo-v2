@@ -5,23 +5,18 @@ Usage : uv run python scripts/seed.py
 
 from __future__ import annotations
 
-from velmo.db import Base, make_engine, session_factory
-from velmo.sampledata import seed
-
 
 def main() -> None:
+    from velmo.db import Base, make_engine, session_factory
+    from velmo.sampledata import seed_if_empty
+
     engine = make_engine()
     Base.metadata.create_all(engine)
     session = session_factory()()
-    # Idempotence simple : ne pas re-seeder si des clients existent déjà.
-    from velmo.db import Customer
-    from velmo.tools._common import select
-
-    if session.scalars(select(Customer)).first() is not None:
+    if seed_if_empty(session):
+        print("Base Velmo peuplée (catalogue, clients, commandes).")
+    else:
         print("Base déjà peuplée — rien à faire.")
-        return
-    seed(session)
-    print("Base Velmo peuplée (catalogue, clients, commandes).")
 
 
 if __name__ == "__main__":
