@@ -15,6 +15,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   concurrence, isolation entre utilisateurs, limites R1-R6, etc.) plutôt que de les découvrir via les
   tests.
 
+## Découpage du travail
+
+- Découpe tout travail en une **pile de petites PR**, chacune sous **400 lignes modifiées** et centrée
+  sur **un seul changement**. Chaque PR ne s'appuie que sur celles situées en dessous d'elle dans la
+  pile (stacked PRs) — jamais sur une PR parallèle.
+- Si une PR dépasse 400 lignes ou mélange deux préoccupations (ex. refactor + nouvelle feature),
+  re-découpe-la avant de la proposer.
+- Chaque PR embarque **ses propres tests** — pas de PR « je testerai à la fin ».
+- Chaque PR se termine par un **moyen d'observer le résultat directement** : une commande à lancer
+  (`make test`, `uv run pytest tests/... -v`, `make chat`, `make eval`, …) et la **sortie attendue**.
+  Ce couple commande + sortie attendue est explicité dans la description de la PR.
+
 ## Projet
 
 Velmo 2.0 — reconstruction complète (from scratch) de l'agent de support d'une boutique en ligne de
