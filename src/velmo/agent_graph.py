@@ -12,6 +12,7 @@ graph with only the new message; the runtime loads and persists the rest.
 
 from __future__ import annotations
 
+import ast
 from contextlib import nullcontext
 from typing import Annotated, Literal, TypedDict
 
@@ -25,6 +26,7 @@ from langgraph.graph.message import add_messages
 from .agent_tools import build_tools
 from .llm import get_chat_model
 from .routing import SYSTEM_PROMPT, run_deterministic
+from .tools._common import classify_result
 from .trace import Trace
 
 
@@ -124,14 +126,20 @@ def _tool_outcome(content: object) -> str:
     """Classify a tool result read back from a ToolMessage.
 
     Business tools return dicts; LangChain stringifies them into the message
-    content, so the verdict is matched on the serialized key rather than parsed.
+    content (Python repr), so we parse it back rather than matching substrings.
+    Substring matching is unsafe here: some tools carry free text composed by
+    the LLM (e.g. escalate_to_human's `reason`), and that text can legitimately
+    contain a fragment like `'error':` without the call having failed. Parsing
+    the literal and delegating to `classify_result` reads the actual `action`/
+    `error` keys instead of guessing from raw text.
     """
-    text = str(content)
-    if "'error':" in text or '"error":' in text:
-        return "error"
-    if "'escalate'" in text or '"escalate"' in text:
-        return "escalate"
-    return "ok"
+    try:
+        parsed = ast.literal_eval(str(content))
+    except (ValueError, SyntaxError):
+        return "ok"
+    if not isinstance(parsed, dict):
+        return "ok"
+    return classify_result(parsed)
 
 
 def answer(

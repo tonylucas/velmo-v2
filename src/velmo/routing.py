@@ -14,6 +14,7 @@ import re
 from collections.abc import Callable
 
 from . import tools
+from .tools._common import classify_result
 from .tools.memory_tools import forget_user_data, inspect_user_memory
 from .trace import Trace
 
@@ -234,10 +235,9 @@ def _confirm_or_act(
     result = action()
     if trace is not None:
         # Business tools return either {"error": ...} or {"action": ...} — never
-        # both, and never an exception for an expected case. That convention is
-        # what makes the verdict readable here rather than inside each tool.
-        outcome = "error" if result.get("error") else str(result.get("action", "ok"))
-        trace.add("tool", tool, outcome)
+        # both, and never an exception for an expected case. classify_result is
+        # the single source of truth shared with the LLM path (agent_graph).
+        trace.add("tool", tool, classify_result(result))
     if result.get("error"):
         return f"Je ne trouve pas la commande {order_id} à votre nom."
     if result.get("action") == "escalate":

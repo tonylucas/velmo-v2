@@ -13,6 +13,22 @@ REFUND_CAP = 50.0
 MODIFIABLE_STATUSES = {OrderStatus.paid, OrderStatus.prepared}
 RETURNABLE_STATUSES = {OrderStatus.delivered}
 
+# Both spellings mean the same thing to a metric: `escalate` is a tool declining
+# to act, `escalated` is escalate_to_human succeeding. Downstream reads one word.
+ESCALATION_ACTIONS = frozenset({"escalate", "escalated"})
+
+
+def classify_result(result: dict[str, object]) -> str:
+    """The outcome word for a tool result: "error", "escalate", or its action verb.
+
+    Single source of truth so the deterministic path and the LLM path cannot
+    drift apart, and so both escalation verbs normalize to "escalate".
+    """
+    if result.get("error"):
+        return "error"
+    action = str(result.get("action", "ok"))
+    return "escalate" if action in ESCALATION_ACTIONS else action
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
@@ -40,6 +56,8 @@ __all__ = [
     "REFUND_CAP",
     "MODIFIABLE_STATUSES",
     "RETURNABLE_STATUSES",
+    "ESCALATION_ACTIONS",
+    "classify_result",
     "new_id",
     "owned_order",
     "order_to_dict",

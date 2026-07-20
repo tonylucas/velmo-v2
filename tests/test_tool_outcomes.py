@@ -7,7 +7,23 @@ are read back from these steps rather than by instrumenting all ten tools.
 from __future__ import annotations
 
 from conftest import build_reference_agent
+from velmo.tools._common import classify_result
 from velmo.trace import Trace
+
+
+def test_classify_result_normalizes_both_escalation_verbs() -> None:
+    # `escalate` (a tool declining to act) and `escalated` (escalate_to_human
+    # succeeding) must read as the same outcome to the escalation-rate metric.
+    assert classify_result({"action": "escalate"}) == "escalate"
+    assert classify_result({"action": "escalated"}) == "escalate"
+
+
+def test_classify_result_free_text_containing_error_key_is_not_an_error() -> None:
+    # escalate_to_human's `reason` is free text an LLM composes from the
+    # conversation; it can legitimately contain "'error':" without the call
+    # having failed. Only the actual `error` key should trigger "error".
+    result = {"action": "escalated", "escalation_id": "esc-1", "reason": "customer said 'error': timeout"}
+    assert classify_result(result) == "escalate"
 
 
 def test_deterministic_escalation_is_recorded_as_a_tool_step() -> None:
@@ -33,7 +49,7 @@ def test_deterministic_success_is_recorded_with_the_tool_action() -> None:
 
     tools = [s for s in trace.steps if s.stage == "tool"]
     assert len(tools) == 1
-    assert tools[0].outcome not in ("escalate", "error")
+    assert tools[0].outcome == "cancelled"
 
 
 def test_unowned_order_is_recorded_as_a_tool_error() -> None:
