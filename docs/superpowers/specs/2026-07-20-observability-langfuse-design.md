@@ -72,13 +72,27 @@ cas dès qu'il y a des callbacks.
 
 ### 2d. Réutilisation de la `Trace` existante
 
-`src/velmo/trace.py` enregistre déjà, par tour, quels détecteurs ont tiré, quels
-nœuds ont été traversés, **quels outils ont été appelés et avec quel `outcome`**.
-C'est exactement la source des métriques « escalade » et « erreur outil ».
+`src/velmo/trace.py` enregistre déjà, par tour, quels détecteurs ont tiré et quels
+nœuds ont été traversés. `Agent.respond` crée donc une `Trace` interne quand le
+tracer est actif et qu'aucune n'a été fournie par l'appelant (la démo Streamlit en
+passe déjà une, elle est alors réutilisée telle quelle). **Aucun des 10 outils
+métier n'est modifié.**
 
-`Agent.respond` crée donc une `Trace` interne quand le tracer est actif et qu'aucune
-n'a été fournie par l'appelant (la démo Streamlit en passe déjà une, elle est alors
-réutilisée telle quelle). **Aucun des 10 outils métier n'est modifié.**
+> **Correction apportée à l'écriture du plan.** Une version antérieure de cette
+> section affirmait que la `Trace` enregistrait déjà les outils « avec leur
+> `outcome` ». Vérification faite sur le code : c'est faux. `agent_graph.py`
+> écrit systématiquement `outcome="called"` sans jamais lire le résultat, et le
+> chemin **déterministe** — qui traite la majorité des tours — n'enregistre
+> **aucun** pas `stage="tool"` : l'escalade se décide dans `routing._confirm_or_act`,
+> qui ne reçoit pas de trace. L'escalade et les erreurs d'outils étaient donc
+> inobservables.
+>
+> Le chantier ajoute donc une étape préalable : faire enregistrer le **verdict**
+> de l'outil (`escalate`, `error`, ou le verbe d'action du tool). Portée
+> volontairement étroite — seul le chemin **modifiant** (`_confirm_or_act`, 5 sites
+> d'appel) et le chemin LLM (lecture des `ToolMessage`) sont instrumentés. Les
+> lectures seules restent hors traçage, pour que le taux d'escalade ne soit pas
+> dilué par des consultations.
 
 ## 3. Ce qui est capturé, et par quoi
 
@@ -88,8 +102,8 @@ réutilisée telle quelle). **Aucun des 10 outils métier n'est modifié.**
 | Coût par conversation | automatique | `CallbackHandler` lit l'usage de tokens du modèle |
 | Volume conversations / tours | automatique | `session_id = user_id` regroupe les tours |
 | Taux de blocage par catégorie | `Decision.category` | metadata `guardrail_in` / `guardrail_out` |
-| Taux d'escalade humaine | `Trace` | pas `stage="tool"` d'`outcome` escalade |
-| Taux d'erreur technique outils | `Trace` | pas `stage="tool"` en erreur |
+| Taux d'escalade humaine | `Trace` | pas `stage="tool"` d'`outcome` escalade (cf. §2d) |
+| Taux d'erreur technique outils | `Trace` | pas `stage="tool"` en erreur (cf. §2d) |
 
 Le coût n'est disponible **que** via le `CallbackHandler` LangChain : lui seul voit
 l'usage de tokens remonté par le modèle. C'est la raison du choix « handler + nos
@@ -183,6 +197,7 @@ Le seam `LangfuseTracer` lui-même reste non testé hors-ligne, au même titre q
 
 ## 8. Découpage prévisionnel
 
-1. `observability.py` : protocoles, `NoOpTracer`, `get_tracer()`, `LangfuseTracer`.
-2. `callbacks` dans `agent_graph.answer` + branchement dans `Agent.respond` (+ `Trace` interne).
-3. Extra `obs`, `.env.example`, `README` de mise en route Langfuse.
+1. Verdict des outils dans la `Trace` (`routing._confirm_or_act` + `_trace_tool_calls`), cf. §2d.
+2. `observability.py` : protocoles, `NoOpTracer`, `get_tracer()`, `LangfuseTracer`.
+3. `callbacks` dans `agent_graph.answer` + branchement dans `Agent.respond` (+ `Trace` interne).
+4. Extra `obs`, `.env.example`, `Dockerfile`, runbook de mise en route Langfuse.
