@@ -19,7 +19,7 @@ jobs:
       - run: uv python install 3.11
       - run: uv sync
       - name: Quality gate
-        run: uv run python -m velmo.mlops.score --min-score "${MIN_SCORE:-0.8}"
+        run: uv run python -m velmo.mlops.score --min-score "${MIN_SCORE:-0.90}"
         env:
           MIN_SCORE: ${{ vars.EVAL_MIN_SCORE }}
 
