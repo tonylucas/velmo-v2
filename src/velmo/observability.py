@@ -118,10 +118,16 @@ class LangfuseTurn:
         if self._ended:
             return
         self._ended = True
-        # The metadata lands on the root span: the v4 SDK has no
-        # `update_current_trace`, and these values are only known now.
-        self._client.update_current_span(output=answer, metadata=metadata)
-        self._stack.close()
+        # The stack must close no matter what: if update_current_span raises,
+        # leaving the ExitStack open would leak the OTel context (propagate_attributes
+        # + start_as_current_observation) into whatever runs next on this thread —
+        # including the *next* turn, which would then be misattributed to this span.
+        try:
+            # The metadata lands on the root span: the v4 SDK has no
+            # `update_current_trace`, and these values are only known now.
+            self._client.update_current_span(output=answer, metadata=metadata)
+        finally:
+            self._stack.close()
         self._client.flush()
 
 
@@ -162,20 +168,28 @@ def _mask_otel_spans(*, params: Any) -> Any:
     *completion*, and `check_output` only rejects a leak after the fact — by
     which time the generation is already on the span. This hook is the last gate.
 
-    Never raises: Langfuse drops the entire export batch on an exception, so a
-    masking bug would silently cost observability rather than leak.
+    Deliberately lets exceptions propagate — do not add a broad `except` here.
+    Verified against the installed SDK (`langfuse/_client/span_exporter.py`,
+    `_apply_mask_otel_spans`/`export`): if this function raises, the exporter
+    catches it, logs it, and returns `SpanExportResult.SUCCESS` from `export()`
+    *without* ever calling the underlying exporter — the batch is dropped,
+    unsent. But if this function *returns `None`* instead (e.g. a bare
+    `except: return None`), that hits a different, documented branch
+    (`langfuse/types.py`, `MaskOtelSpansResult`): `_apply_mask_otel_spans`
+    treats a `None` result as "no patches needed" and the batch is exported
+    **unredacted**. So catching here and returning `None` would turn this from
+    a privacy gate into a pass-through on exactly the failure it exists to
+    guard against. Raising keeps the only failure mode "lose this batch of
+    observability", never "leak a secret".
     """
     from langfuse.types import MaskOtelSpansResult, OtelSpanPatch
 
-    try:
-        patches = {}
-        for identifier, span in params.spans.items():
-            replacements = _redact_attributes(span.attributes)
-            if replacements:
-                patches[identifier] = OtelSpanPatch(set_attributes=replacements)
-        return MaskOtelSpansResult(span_patches=patches)
-    except Exception:
-        return None
+    patches = {}
+    for identifier, span in params.spans.items():
+        replacements = _redact_attributes(span.attributes)
+        if replacements:
+            patches[identifier] = OtelSpanPatch(set_attributes=replacements)
+    return MaskOtelSpansResult(span_patches=patches)
 
 
 def get_tracer() -> Tracer:

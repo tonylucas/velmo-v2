@@ -17,15 +17,30 @@ RETURNABLE_STATUSES = {OrderStatus.delivered}
 # to act, `escalated` is escalate_to_human succeeding. Downstream reads one word.
 ESCALATION_ACTIONS = frozenset({"escalate", "escalated"})
 
+# `error` values a tool returns for a business/authorization verdict rather than
+# a technical fault — the request was well-formed and reached the tool, which
+# declined it on purpose. `not_found_or_forbidden` is `owned_order`'s isolation
+# check (R3): a customer mistyping an order id, or probing someone else's, hits
+# this on every read/write tool. `unknown_product` is `check_stock` rejecting a
+# reference that does not exist. Neither is a system fault, so neither may count
+# towards the technical tool-error rate.
+BUSINESS_VERDICTS = frozenset({"not_found_or_forbidden", "unknown_product"})
+
 
 def classify_result(result: dict[str, object]) -> str:
-    """The outcome word for a tool result: "error", "escalate", or its action verb.
+    """The outcome word for a tool result: a business verdict, "error", "escalate",
+    or its action verb.
 
     Single source of truth so the deterministic path and the LLM path cannot
-    drift apart, and so both escalation verbs normalize to "escalate".
+    drift apart: both escalation verbs normalize to "escalate", and a business
+    verdict such as `not_found_or_forbidden` reports as itself rather than
+    folding into "error" — "error" is reserved for genuine technical failure,
+    which is what the tool-error metric is meant to measure.
     """
-    if result.get("error"):
-        return "error"
+    error = result.get("error")
+    if error:
+        error_str = str(error)
+        return error_str if error_str in BUSINESS_VERDICTS else "error"
     action = str(result.get("action", "ok"))
     return "escalate" if action in ESCALATION_ACTIONS else action
 
@@ -48,7 +63,10 @@ def order_to_dict(order: Order) -> dict:
         "status": order.status.value,
         "total": float(order.total),
         "shipping_address": order.shipping_address,
-        "items": [{"item_id": it.id, "variant_id": it.variant_id, "size": it.size.value} for it in order.items],
+        "items": [
+            {"item_id": it.id, "variant_id": it.variant_id, "size": it.size.value}
+            for it in order.items
+        ],
     }
 
 
@@ -57,6 +75,7 @@ __all__ = [
     "MODIFIABLE_STATUSES",
     "RETURNABLE_STATUSES",
     "ESCALATION_ACTIONS",
+    "BUSINESS_VERDICTS",
     "classify_result",
     "new_id",
     "owned_order",

@@ -69,13 +69,19 @@ class Agent:
         gate_in = self.guardrails.check_input(message, trace=trace)
         if not gate_in.allowed:
             # Counted so the blocking rate stays measurable, but the offending
-            # message never leaves the process: only its verdict does.
+            # message never leaves the process: only its verdict does. Wrapped
+            # like the main path below: end() is idempotent, so a raise between
+            # start_turn and end must still close the turn rather than leaking
+            # its OTel context into the next call on this thread.
             blocked = self.tracer.start_turn(user_id, "[blocked input]")
-            blocked.end(
-                answer="[refused]",
-                guardrail_in=gate_in.action,
-                guardrail_in_category=gate_in.category,
-            )
+            try:
+                blocked.end(
+                    answer="[refused]",
+                    guardrail_in=gate_in.action,
+                    guardrail_in_category=gate_in.category,
+                )
+            finally:
+                blocked.end(answer="[unhandled error]", error=True)
             return gate_in.refusal or DEFAULT_REFUSAL
 
         # Masking keeps the pipeline going on a sanitized message: the secret never
