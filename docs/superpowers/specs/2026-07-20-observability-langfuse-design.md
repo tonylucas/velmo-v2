@@ -123,36 +123,82 @@ signaux » plutôt que « nos signaux seuls ».
 Langfuse Cloud est un service **externe**. Envoyer le message client brut violerait
 les exigences PII du brief.
 
-**Ce qui est envoyé : `safe_message` uniquement** — le message *après* masquage PII
-par `check_input`. Le secret ou la donnée personnelle détectée ne quitte jamais le
-système ; Langfuse reçoit la version masquée, celle qui va déjà au LLM, à la mémoire
-et au checkpoint.
+**Ce qui atteint le span racine : `safe_message` en `input`, la réponse finale en
+`output`** — le message *après* masquage PII par `check_input`. Mais ceci ne décrit
+que la racine du tour, pas ce qui part réellement sur Langfuse Cloud : `turn.callbacks`
+(le `CallbackHandler` LangChain) est transmis à `graph.invoke`, et LangChain
+instrumente **tous les runs imbriqués** du graphe, pas seulement la racine. Concrètement,
+pour un tour donné, part aussi sur Langfuse :
+
+- l'historique de conversation restauré par le checkpointer, jusqu'à 30 messages
+  (`agent_graph.window_messages`) ;
+- le prompt système envoyé au modèle, **avec les faits mémoire injectés** pour ce
+  client (`agent_graph.select_memory` / `memory.facts.render_facts`) ;
+- le contenu des `ToolMessage` — en particulier `order_to_dict` (`tools/_common.py`)
+  renvoie `shipping_address` en clair pour tout appel outil qui lit ou modifie une
+  commande ;
+- la réponse finale elle-même, qui peut légitimement contenir l'**email du client** :
+  le garde-fou de sortie (`foreign_email`) ne bloque que les emails qui ne sont **pas**
+  celui du client identifié — le sien, lui, passe, puisque c'est le comportement voulu
+  côté client.
+
+Activer les clés Langfuse revient donc à envoyer, vers un service externe, l'historique
+de conversation, le contexte mémoire du client et le contenu structuré des appels
+d'outils — pas seulement le message masqué de ce tour. C'est le prix de « voir le coût
+et la latence par tour » avec le SDK v4 : la structure en spans imbriqués qui rend ces
+métriques automatiques est la même qui exporte tout ce que le modèle a vu.
+
+**Ce qui est masqué avant export : uniquement les numéros de carte (Luhn valide) et les
+IBAN**, via `guardrails.detectors.scan_secrets` — la même détection que le garde-fou
+d'entrée, réutilisée telle quelle (cf. §4a). Une adresse postale, un email ou un fait
+mémoire stocké (`remember_fact`) traversent ce masquage **sans y être détectés** : ce
+n'est pas un oubli à corriger dans ce chantier, c'est la portée assumée de
+`scan_secrets`. Poser les clés `LANGFUSE_*` en prod, c'est donc consentir à ce que ces
+données atteignent Langfuse Cloud non masquées — « masquage des secrets bancaires » et
+« anonymisation de la conversation » sont deux choses différentes, et ce chantier ne
+livre que la première.
 
 **Ce qui n'est jamais envoyé :**
-- le message brut, avant masquage ;
+- le message brut, avant masquage par `check_input` — seule sa version *après* masquage
+  atteint le span racine ; le secret détecté (carte/IBAN) ne quitte jamais le processus
+  sous sa forme brute ;
 - `GuardrailEngine.events`, qui reste le **journal de conformité local** — seules des
   métadonnées agrégées (action, catégorie) partent sur la trace ;
 - un message dont `check_input` a refusé le passage : `start_turn` est appelé **après**
-  le garde-fou d'entrée, donc un tour bloqué n'envoie aucun contenu. Le blocage lui-même
-  est compté via un événement sans texte, pour que le taux de blocage reste mesurable.
+  le garde-fou d'entrée, avec le littéral `"[blocked input]"` et non le message — donc
+  un tour bloqué n'envoie aucun contenu. Le blocage lui-même est compté via un événement
+  sans texte, pour que le taux de blocage reste mesurable ;
+- quoi que ce soit lié au gate d'éval en CI : `velmo.mlops.score` (sans `--prod`)
+  construit l'agent avec `tracer=NoOpTracer()` **explicitement**, pas via l'absence de
+  clés dans l'environnement — le gate reste hors-ligne même si `LANGFUSE_*` est présent
+  sur la machine qui l'exécute (cf. §6).
 
 ### 4a. Le trou que le masquage amont ne bouche pas
 
 Masquer l'entrée ne suffit pas. Le `CallbackHandler` capture la **sortie brute du LLM**
-au moment de la génération ; `check_output` ne rejette une fuite de secret qu'**après
-coup**, quand le contenu est déjà posé sur le span. Un numéro de carte halluciné ou
-recopié par le modèle partirait donc chez Langfuse alors même que le client, lui, ne le
-verrait jamais.
+au moment de la génération ; `check_output` ne rejette une fuite de secret (carte, IBAN)
+qu'**après coup**, quand le contenu est déjà posé sur le span — et ne couvre de toute
+façon ni les adresses, ni l'email du client, ni les faits mémoire, absents de son
+périmètre de détection. Un numéro de carte halluciné ou recopié par le modèle partirait
+donc chez Langfuse alors même que le client, lui, ne le verrait jamais.
 
 Correctif : le client Langfuse est construit avec le hook **`mask_otel_spans`** (SDK v4),
 qui s'exécute à l'export, après le handler, et couvre les attributs de spans issus des
 instrumentations tierces — précisément ce que le hook `mask` hérité ne couvre pas. Il
 réutilise `guardrails.detectors.scan_secrets` : une seule définition de « secret » pour
-le produit et pour l'observabilité.
+le produit et pour l'observabilité — avec la même portée étroite (cartes/IBAN) que
+partout ailleurs dans le produit ; ce hook ne masque pas les adresses ou les emails,
+pour la même raison que `check_input`/`check_output` ne les masquent pas.
 
-Deux contraintes imposées par le SDK, respectées dans le plan : le hook ne doit
-**jamais lever** (une exception fait tomber tout le lot d'export) et doit rester
-rapide et déterministe (il tourne sur le thread d'export OpenTelemetry).
+Contrainte imposée par le SDK, vérifiée sur l'implémentation installée
+(`langfuse/_client/span_exporter.py`, `langfuse/types.py`) : si `mask_otel_spans`
+**lève**, Langfuse jette tout le lot d'export — rien n'est envoyé, le coût est de
+l'observabilité perdue pour ce lot, jamais une fuite. S'il **renvoie `None`** au lieu de
+lever, en revanche, le lot part **non masqué** : un `except Exception: return None`
+transformerait donc la dernière porte en passoire, exactement dans le cas où elle est
+censée servir. Le hook du produit laisse donc l'exception se propager plutôt que de
+l'avaler ; il reste par ailleurs rapide et déterministe (il tourne sur le thread
+d'export OpenTelemetry).
 
 ## 5. Configuration
 
@@ -206,7 +252,9 @@ Vérifiées sur `langfuse.com/docs/observability/best-practices` :
 ## 6. Ce qui n'est délibérément PAS fait
 
 - **Pas de requête Langfuse depuis la CI.** `cost=0.0` dans `mlops/report.md` reste
-  exact : l'éval est hors-ligne et ne consomme aucun token **par construction**. Le
+  exact : l'éval est hors-ligne et ne consomme aucun token **par construction** —
+  `mlops.score.build_offline_agent` passe `tracer=NoOpTracer()` explicitement plutôt
+  que de compter sur l'absence de `LANGFUSE_*` dans l'environnement d'exécution. Le
   coût réel est une métrique de dashboard, pas un terme de la note bloquante. Faire
   dépendre le gate d'un service externe le rendrait non déterministe — l'inverse de
   ce que 005a garantit.
