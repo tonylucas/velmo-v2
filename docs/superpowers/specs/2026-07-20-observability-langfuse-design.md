@@ -136,6 +136,24 @@ et au checkpoint.
   le garde-fou d'entrée, donc un tour bloqué n'envoie aucun contenu. Le blocage lui-même
   est compté via un événement sans texte, pour que le taux de blocage reste mesurable.
 
+### 4a. Le trou que le masquage amont ne bouche pas
+
+Masquer l'entrée ne suffit pas. Le `CallbackHandler` capture la **sortie brute du LLM**
+au moment de la génération ; `check_output` ne rejette une fuite de secret qu'**après
+coup**, quand le contenu est déjà posé sur le span. Un numéro de carte halluciné ou
+recopié par le modèle partirait donc chez Langfuse alors même que le client, lui, ne le
+verrait jamais.
+
+Correctif : le client Langfuse est construit avec le hook **`mask_otel_spans`** (SDK v4),
+qui s'exécute à l'export, après le handler, et couvre les attributs de spans issus des
+instrumentations tierces — précisément ce que le hook `mask` hérité ne couvre pas. Il
+réutilise `guardrails.detectors.scan_secrets` : une seule définition de « secret » pour
+le produit et pour l'observabilité.
+
+Deux contraintes imposées par le SDK, respectées dans le plan : le hook ne doit
+**jamais lever** (une exception fait tomber tout le lot d'export) et doit rester
+rapide et déterministe (il tourne sur le thread d'export OpenTelemetry).
+
 ## 5. Configuration
 
 Trois variables, toutes optionnelles (`.env.example`) :
@@ -157,12 +175,33 @@ Dépendance : nouvel extra `obs = ["langfuse>=4,<5"]` dans `pyproject.toml`, ajo
 
 Le SDK v4 est basé sur OpenTelemetry ; l'API diffère nettement de v2/v3 :
 
-- `Langfuse(public_key=…, secret_key=…, host=…)` — client ; `auth_check()` valide les clés.
+- `Langfuse(public_key=…, secret_key=…, host=…, mask_otel_spans=…)` — client ;
+  `auth_check()` valide les clés.
 - `from langfuse.langchain import CallbackHandler` — handler passé dans `config["callbacks"]`.
+  Il résout son client via `get_client(public_key=…)` : le singleton que le constructeur
+  `Langfuse(...)` enregistre. Le client qu'on construit est donc bien celui qu'il utilise,
+  masquage compris — à condition de lui passer `public_key` explicitement.
 - `client.start_as_current_observation(name=…, as_type="span", input=…)` — context manager.
-- `propagate_attributes(user_id=…, session_id=…, metadata=…, tags=…)` — context manager
+- `propagate_attributes(user_id=…, session_id=…, version=…, tags=…)` — context manager
   qui attache les attributs à la trace courante.
-- `client.update_current_span(output=…, metadata=…)` puis `client.flush()`.
+- `client.update_current_span(output=…, metadata=…)` puis `client.flush()`. **Il n'existe
+  pas d'`update_current_trace`** en v4 : les métadonnées connues seulement en fin de tour
+  se posent sur le span racine.
+
+### 5b. Bonnes pratiques Langfuse suivies
+
+Vérifiées sur `langfuse.com/docs/observability/best-practices` :
+
+- **Une trace par tour, une session par conversation** — c'est littéralement la structure
+  que la doc prescrit pour un chatbot (« on ne sait pas d'avance quand une conversation
+  se termine »). `session_id = user_id`.
+- **Entrée/sortie de l'observation racine = le message client et la réponse** — la doc en
+  fait le champ que lisent les relecteurs, les évaluateurs et les expériences. Pas de
+  blob JSON.
+- **Noms d'observation à l'impératif et sans valeur dynamique** : le span racine est
+  `handle-turn`. La doc traite les noms « comme une API » — les renommer casse
+  silencieusement dashboards et évaluateurs, et y glisser un identifiant fait exploser
+  leur cardinalité.
 
 ## 6. Ce qui n'est délibérément PAS fait
 

@@ -38,7 +38,18 @@ These were checked against the running code. Trust them.
 
 1. A shipped order escalates: `respond("C-marc-dubois", "Je veux annuler ma commande O-2024-0103, je confirme")` returns text containing `"Je transmets à un conseiller"`. **Today the resulting `Trace` contains zero `stage="tool"` steps** — that is exactly the gap Task 1 closes.
 2. `check_input("Ma carte 4111 1111 1111 1111 a ete debitee, ma commande O-2024-0101 ?")` returns `action="mask"`, `category="pii"`, `sanitized="Ma carte [REDACTED_CARD] a ete debitee, ma commande O-2024-0101 ?"`.
-3. Langfuse 4.14.1 exposes: `Langfuse(public_key=…, secret_key=…, host=…)`, `client.start_as_current_observation(name=…, as_type="span", input=…)` (context manager), `client.update_current_span(output=…, metadata=…)`, `client.flush()`, `propagate_attributes(user_id=…, session_id=…, version=…)` (context manager), and `from langfuse.langchain import CallbackHandler`.
+3. Langfuse 4.14.1 exposes: `Langfuse(public_key=…, secret_key=…, host=…, mask_otel_spans=…)`, `client.start_as_current_observation(name=…, as_type="span", input=…)` (context manager), `client.update_current_span(output=…, metadata=…)`, `client.flush()`, `propagate_attributes(user_id=…, session_id=…, version=…)` (context manager), and `from langfuse.langchain import CallbackHandler`. There is **no** `update_current_trace` — trace-level metadata known only at the end must go on the root span.
+4. `CallbackHandler(public_key=…)` resolves its client through `get_client(public_key=…)`, the per-key singleton that `Langfuse(...)` registers on construction. Constructing the client ourselves therefore *is* what the handler uses — including its masking hook.
+5. `velmo.guardrails.detectors.scan_secrets(text) -> tuple[str, bool]` masks Luhn-checked card numbers and IBANs, returning `(masked_text, found)`. Reused as the export-time redaction primitive.
+
+## Langfuse best practices this plan follows
+
+Checked against `langfuse.com/docs/observability/best-practices`:
+
+- **One trace per turn, one session per conversation.** The docs prescribe exactly this for a chatbot: "you don't know upfront when a conversation ends, and the per-turn model keeps traces small". `session_id = user_id` implements it.
+- **Root observation input/output = the user message and the assistant response**, not a raw payload — the docs single this out as the field reviewers and evaluators read. `input=safe_message`, `output=answer`.
+- **Verb-first, low-cardinality observation names.** Names are "treated like an API": a rename silently breaks dashboards and evaluators. The root span is `handle-turn`, never a name carrying a user or order id.
+- **Run-specific values go in metadata**, not in names — hence the guardrail category, escalation and tool-error counters as metadata.
 
 ---
 
@@ -349,6 +360,30 @@ def test_importing_the_module_does_not_import_langfuse() -> None:
 
     assert "langfuse" not in sys.modules
     assert observability.__name__ == "velmo.observability"
+
+
+def test_exported_attributes_are_redacted() -> None:
+    # Defence in depth: respond() masks the INPUT, but the LangChain handler
+    # captures the raw LLM COMPLETION, and check_output only rejects a leak
+    # after the fact. This is the last gate before data leaves the process.
+    replacements = observability._redact_attributes(
+        {
+            "gen_ai.completion.0.content": "Le remboursement ira sur 4111 1111 1111 1111.",
+            "gen_ai.prompt.0.content": "Où en est ma commande O-2024-0101 ?",
+            "langfuse.observation.type": "generation",
+            "token.count": 42,
+        }
+    )
+
+    # Only the offending attribute is patched; the rest is left untouched so
+    # the trace stays useful.
+    assert list(replacements) == ["gen_ai.completion.0.content"]
+    assert "4111" not in replacements["gen_ai.completion.0.content"]
+    assert "[REDACTED_CARD]" in replacements["gen_ai.completion.0.content"]
+
+
+def test_clean_attributes_produce_no_patch() -> None:
+    assert observability._redact_attributes({"gen_ai.completion.0.content": "Bonjour !"}) == {}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -381,10 +416,18 @@ input, and a turn blocked by the input guardrail carries no content at all.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from contextlib import ExitStack
 from typing import Any, Protocol
 
+from .guardrails.detectors import scan_secrets
+
 DEFAULT_HOST = "https://cloud.langfuse.com"
+
+# Verb-first and free of dynamic values: Langfuse treats observation names like
+# an API — dashboards, saved views and evaluators all match on them, so a rename
+# silently breaks them and a name carrying an id explodes their cardinality.
+TURN_SPAN_NAME = "handle-turn"
 
 
 class Turn(Protocol):
@@ -435,23 +478,35 @@ class LangfuseTurn:
 
     records = True
 
-    def __init__(self, client: Any, user_id: str, message: str, version: str) -> None:
+    def __init__(self, client: Any, public_key: str, user_id: str, message: str, version: str) -> None:
         from langfuse import propagate_attributes
         from langfuse.langchain import CallbackHandler
 
         self._client = client
         self._stack = ExitStack()
         self._stack.enter_context(
-            # session_id groups a customer's turns into one conversation, which
-            # is what makes "cost per conversation" a query rather than a job.
+            # One trace per turn, one session per conversation — the structure
+            # Langfuse prescribes for chatbots, and what makes "cost per
+            # conversation" a query rather than a job.
             propagate_attributes(user_id=user_id, session_id=user_id, version=version)
         )
         self._stack.enter_context(
-            client.start_as_current_observation(name="turn", as_type="span", input=message)
+            # The root observation's input/output become the trace's: the docs
+            # single these out as what reviewers and evaluators actually read,
+            # so they are the customer message and the assistant reply, not a
+            # raw payload.
+            client.start_as_current_observation(
+                name=TURN_SPAN_NAME, as_type="span", input=message
+            )
         )
-        self.callbacks: list[Any] = [CallbackHandler()]
+        # Passed explicitly: CallbackHandler resolves its client through
+        # get_client(public_key=...), so naming the key pins it to the client we
+        # built — the one carrying the masking hook.
+        self.callbacks: list[Any] = [CallbackHandler(public_key=public_key)]
 
     def end(self, *, answer: str, **metadata: Any) -> None:
+        # The metadata lands on the root span: the v4 SDK has no
+        # `update_current_trace`, and these values are only known now.
         self._client.update_current_span(output=answer, metadata=metadata)
         self._stack.close()
         self._client.flush()
@@ -462,12 +517,52 @@ class LangfuseTracer:
 
     records = True
 
-    def __init__(self, client: Any, version: str) -> None:
+    def __init__(self, client: Any, public_key: str, version: str) -> None:
         self._client = client
+        self._public_key = public_key
         self._version = version
 
     def start_turn(self, user_id: str, message: str) -> Turn:
-        return LangfuseTurn(self._client, user_id, message, self._version)
+        return LangfuseTurn(self._client, self._public_key, user_id, message, self._version)
+
+
+def _redact_attributes(attributes: Mapping[str, Any]) -> dict[str, str]:
+    """String attributes that carried a secret, with it redacted.
+
+    Kept pure and free of any Langfuse import so it is testable offline — the
+    export hook below is a thin wrapper around it.
+    """
+    replacements: dict[str, str] = {}
+    for key, value in attributes.items():
+        if isinstance(value, str):
+            masked, found = scan_secrets(value)
+            if found:
+                replacements[key] = masked
+    return replacements
+
+
+def _mask_otel_spans(*, params: Any) -> Any:
+    """Redact secrets from span attributes just before they leave the process.
+
+    Defence in depth. `Agent.respond` masks the *input* before anything
+    downstream sees it, but the LangChain handler captures the raw LLM
+    *completion*, and `check_output` only rejects a leak after the fact — by
+    which time the generation is already on the span. This hook is the last gate.
+
+    Never raises: Langfuse drops the entire export batch on an exception, so a
+    masking bug would silently cost observability rather than leak.
+    """
+    from langfuse.types import MaskOtelSpansResult, OtelSpanPatch
+
+    try:
+        patches = {}
+        for identifier, span in params.spans.items():
+            replacements = _redact_attributes(span.attributes)
+            if replacements:
+                patches[identifier] = OtelSpanPatch(set_attributes=replacements)
+        return MaskOtelSpansResult(span_patches=patches)
+    except Exception:
+        return None
 
 
 def get_tracer() -> Tracer:
@@ -494,17 +589,18 @@ def get_tracer() -> Tracer:
         public_key=public_key,
         secret_key=secret_key,
         host=os.getenv("LANGFUSE_HOST", DEFAULT_HOST),
+        mask_otel_spans=_mask_otel_spans,
     )
     # Resolved once per process: current_version() shells out to `git describe`,
     # far too costly to repeat on every turn.
-    return LangfuseTracer(client, current_version())
+    return LangfuseTracer(client, public_key, current_version())
 ```
 
 - [ ] **Step 4: Run the tests**
 
 Run: `uv run pytest tests/test_observability.py -v`
 
-Expected: PASS, 5 passed.
+Expected: PASS, 7 passed.
 
 - [ ] **Step 5: Typecheck the new file**
 
@@ -516,7 +612,7 @@ Expected: no error whose path is `src/velmo/observability.py`. Errors reported i
 
 Run: `uv run pytest tests/ -q && make fmt && uv run ruff check .`
 
-Expected: **199 passed**, ruff `All checks passed!`.
+Expected: **201 passed**, ruff `All checks passed!`.
 
 - [ ] **Step 7: Commit**
 
@@ -817,7 +913,7 @@ Expected: PASS, 6 passed.
 
 Run: `uv run pytest tests/ -q && make fmt && uv run ruff check .`
 
-Expected: **205 passed**, ruff `All checks passed!`. If `tests/test_agent_trace.py` or `tests/mlops/` fail, the change altered behaviour for callers that pass no tracer — that is a bug in this task, not a stale test.
+Expected: **207 passed**, ruff `All checks passed!`. If `tests/test_agent_trace.py` or `tests/mlops/` fail, the change altered behaviour for callers that pass no tracer — that is a bug in this task, not a stale test.
 
 - [ ] **Step 9: Verify the eval gate is untouched**
 
@@ -927,7 +1023,7 @@ bloquante doit rester déterministe et sans dépendance réseau.
 
 Run: `uv sync && uv run pytest tests/ -q`
 
-Expected: **205 passed**. `uv.lock` may change — it is tracked (commit `5052eef`), so commit it.
+Expected: **207 passed**. `uv.lock` may change — it is tracked (commit `5052eef`), so commit it.
 
 - [ ] **Step 6: Verify the extra installs**
 
