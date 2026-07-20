@@ -27,7 +27,7 @@ from .agent_tools import build_tools
 from .llm import get_chat_model
 from .routing import SYSTEM_PROMPT, run_deterministic
 from .tools._common import classify_result
-from .trace import Trace
+from .turn_log import TurnLog
 
 
 class AgentState(TypedDict):
@@ -55,13 +55,13 @@ def build_graph(
     context: str = "",
     checkpointer: BaseCheckpointSaver | None = None,
     store=None,
-    trace: Trace | None = None,
+    turn_log: TurnLog | None = None,
 ):
     """Compile the two-node agent graph bound to one request."""
 
     def deterministic_node(state: AgentState) -> dict:
         message = state["messages"][-1].content
-        reply = run_deterministic(session, user_id, kb, message, store, trace=trace)
+        reply = run_deterministic(session, user_id, kb, message, store, turn_log=turn_log)
         if reply is None:
             return {"matched": False}
         return {"messages": [AIMessage(content=reply)], "matched": True}
@@ -82,14 +82,14 @@ def build_graph(
         windowed = window_messages(state["messages"])
         # One invoke on both paths; `timed` keeps the step even if the model
         # raises (Azure timeout), so the panel shows where the turn died.
-        measure = trace.timed("graph", "llm_node") if trace is not None else nullcontext(None)
+        measure = turn_log.timed("graph", "llm_node") if turn_log is not None else nullcontext(None)
         with measure as step:
             result = react.invoke({"messages": windowed})
             if step is not None:
                 step.outcome = "done"
                 step.detail["window"] = len(windowed)
-        if trace is not None:
-            _trace_tool_calls(trace, result["messages"])
+        if turn_log is not None:
+            _log_tool_calls(turn_log, result["messages"])
         return {"messages": result["messages"]}
 
     graph = StateGraph(AgentState)
@@ -101,7 +101,7 @@ def build_graph(
     return graph.compile(checkpointer=checkpointer)
 
 
-def _trace_tool_calls(trace: Trace, messages: list[BaseMessage]) -> None:
+def _log_tool_calls(turn_log: TurnLog, messages: list[BaseMessage]) -> None:
     """Record the tools the model chose and what they returned.
 
     The calls are in the AIMessages create_agent returns and the results in the
@@ -114,7 +114,7 @@ def _trace_tool_calls(trace: Trace, messages: list[BaseMessage]) -> None:
     }
     for message in messages:
         for call in getattr(message, "tool_calls", None) or []:
-            trace.add(
+            turn_log.add(
                 "tool",
                 call["name"],
                 outcomes.get(call["id"], "called"),
@@ -152,7 +152,7 @@ def answer(
     checkpointer: BaseCheckpointSaver | None = None,
     thread_id: str | None = None,
     store=None,
-    trace: Trace | None = None,
+    turn_log: TurnLog | None = None,
     callbacks: list[Any] | None = None,
 ) -> str:
     """Run one turn through the agent graph and return the final reply text."""
@@ -162,8 +162,8 @@ def answer(
         from .memory.facts import render_facts
 
         facts = select_memory(store, user_id, message)
-        if trace is not None:
-            trace.add(
+        if turn_log is not None:
+            turn_log.add(
                 "memory",
                 "select_memory",
                 "injected" if facts else "empty",
@@ -173,7 +173,7 @@ def answer(
         memory = render_facts(facts)
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
-    graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store, trace)
+    graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store, turn_log)
     # Both keys are optional and independent: a turn can have a checkpointer with
     # no callbacks (offline) or callbacks with no checkpointer (a bare graph).
     config: dict[str, Any] = {}

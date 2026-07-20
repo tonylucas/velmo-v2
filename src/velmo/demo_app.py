@@ -31,8 +31,8 @@ from sqlalchemy import select
 from velmo.agent import Agent, build_default_agent
 from velmo.db import Customer
 from velmo.guardrails import Decision
-from velmo.trace import Trace
-from velmo.trace_view import format_detail, grouped_steps, outcome_badge, stage_label, turn_title
+from velmo.turn_log import TurnLog
+from velmo.turn_log_view import format_detail, grouped_steps, outcome_badge, stage_label, turn_title
 
 T = TypeVar("T")
 
@@ -114,21 +114,21 @@ def _badge(decision: Decision) -> tuple[str, str] | None:
     return None
 
 
-def _respond_traced(agent: Agent, user_id: str, prompt: str) -> tuple[str, Trace]:
+def _respond_logged(agent: Agent, user_id: str, prompt: str) -> tuple[str, TurnLog]:
     """Run one turn on the worker thread, recording what it did."""
-    trace = Trace()
-    answer = agent.respond(user_id, prompt, trace=trace)
-    return answer, trace
+    turn_log = TurnLog()
+    answer = agent.respond(user_id, prompt, turn_log=turn_log)
+    return answer, turn_log
 
 
-def _input_decision(trace: Trace) -> Decision | None:
-    """Rebuild the input verdict from the trace's own `check_input` step.
+def _input_decision(turn_log: TurnLog) -> Decision | None:
+    """Rebuild the input verdict from the turn_log's own `check_input` step.
 
     The badge is read back from the turn that actually ran, so the panel and the
     chat can never disagree — and the guardrails are not run a second time.
     """
     step = next(
-        (s for s in trace.steps if s.stage == "guardrail_in" and s.name == "check_input"), None
+        (s for s in turn_log.steps if s.stage == "guardrail_in" and s.name == "check_input"), None
     )
     if step is None:
         return None
@@ -156,14 +156,14 @@ def render_chat_tab(agent: Agent, user_id: str) -> None:
     if not prompt:
         return
 
-    answer, trace = run_on_agent(_respond_traced, agent, user_id, prompt)
+    answer, turn_log = run_on_agent(_respond_logged, agent, user_id, prompt)
 
-    decision = _input_decision(trace)
+    decision = _input_decision(turn_log)
     badge = _badge(decision) if decision is not None else None
     sanitized = decision.sanitized if decision is not None and decision.action == "mask" else None
     history.append({"role": "user", "content": prompt, "badge": badge, "sanitized": sanitized})
     history.append({"role": "assistant", "content": answer})
-    st.session_state.traces.setdefault(user_id, []).append((_clock(), trace))
+    st.session_state.turn_logs.setdefault(user_id, []).append((_clock(), turn_log))
     st.rerun()
 
 
@@ -194,21 +194,21 @@ def render_memory_tab(agent: Agent, user_id: str) -> None:
     )
 
 
-def render_trace_tab(user_id: str) -> None:
+def render_turn_log_tab(user_id: str) -> None:
     st.caption(
         "Ce qui s'est réellement passé à chaque tour : garde-fous exécutés (un détecteur "
         "absent de la liste n'a pas tourné — le contrôle s'arrête au premier qui bloque), "
         "chemin dans le graphe, outils métier appelés, faits mémoire lus et écrits."
     )
-    traces = st.session_state.traces.get(user_id, [])
-    if not traces:
-        st.info("Envoie un message dans le chat : sa trace d'exécution apparaîtra ici.")
+    turn_logs = st.session_state.turn_logs.get(user_id, [])
+    if not turn_logs:
+        st.info("Envoie un message dans le chat : son déroulé d'exécution apparaîtra ici.")
         return
 
     # Most recent first: the turn just sent is the one being inspected.
-    for index, (clock, trace) in reversed(list(enumerate(traces, start=1))):
-        with st.expander(turn_title(index, trace, clock), expanded=index == len(traces)):
-            for stage, steps in grouped_steps(trace):
+    for index, (clock, turn_log) in reversed(list(enumerate(turn_logs, start=1))):
+        with st.expander(turn_title(index, turn_log, clock), expanded=index == len(turn_logs)):
+            for stage, steps in grouped_steps(turn_log):
                 st.markdown(f"**{stage_label(stage)}**")
                 for step in steps:
                     detail = format_detail(step)
@@ -227,7 +227,7 @@ def _clock() -> str:
 def main() -> None:
     st.set_page_config(page_title="Velmo 2.0 — démo", page_icon="⚽", layout="wide")
     st.session_state.setdefault("history", {})
-    st.session_state.setdefault("traces", {})
+    st.session_state.setdefault("turn_logs", {})
 
     try:
         agent = build_prod_agent()
@@ -252,7 +252,7 @@ def main() -> None:
         st.caption(f"`{user_id}` — l'isolation (R3) repose sur cet identifiant.")
         if st.button("↺ Réinitialiser la conversation affichée"):
             st.session_state.history[user_id] = []
-            st.session_state.traces[user_id] = []
+            st.session_state.turn_logs[user_id] = []
             st.rerun()
         with st.expander("Backends (prod)"):
             for line in backend_summary():
@@ -263,13 +263,13 @@ def main() -> None:
             st.caption(f"• {suggestion}")
 
     st.header(customers[user_id])
-    chat_tab, memory_tab, trace_tab = st.tabs(["💬 Chat", "🧠 Faits durables (Chroma)", "🔍 Trace"])
+    chat_tab, memory_tab, log_tab = st.tabs(["💬 Chat", "🧠 Faits durables (Chroma)", "🔍 Déroulé"])
     with chat_tab:
         render_chat_tab(agent, user_id)
     with memory_tab:
         render_memory_tab(agent, user_id)
-    with trace_tab:
-        render_trace_tab(user_id)
+    with log_tab:
+        render_turn_log_tab(user_id)
 
 
 # Streamlit runs this file with __name__ == "__main__"; guarding keeps a plain

@@ -1,13 +1,13 @@
-"""Renders a Trace to markdown for the demo panel.
+"""Renders a TurnLog to markdown for the demo panel.
 
-Pure presentation: takes a Trace, returns strings. Imports no Streamlit, so it
+Pure presentation: takes a TurnLog, returns strings. Imports no Streamlit, so it
 stays unit-testable in CI (which installs no `demo` extra) and keeps
 ``demo_app`` a thin Streamlit layer over it.
 """
 
 from __future__ import annotations
 
-from .trace import Trace, TraceStep
+from .turn_log import TurnLog, TurnLogStep
 
 _STAGE_LABELS = {
     "guardrail_in": (":material/shield:", "Garde-fou entrée"),
@@ -52,24 +52,24 @@ def outcome_badge(outcome: str) -> str:
     return f":{colour}-badge[{outcome}]"
 
 
-def format_detail(step: TraceStep) -> str:
+def format_detail(step: TurnLogStep) -> str:
     """One-line `clé : valeur` summary of a step's detail; empty when it has none."""
     return " · ".join(f"{key} : {value}" for key, value in step.detail.items())
 
 
-def turn_title(index: int, trace: Trace, clock: str) -> str:
+def turn_title(index: int, turn_log: TurnLog, clock: str) -> str:
     """Expander title summarising a turn: index, time, route and duration."""
-    return f"Tour {index} · {clock} · {trace.path} · {trace.total_ms:.0f} ms"
+    return f"Tour {index} · {clock} · {turn_log.path} · {turn_log.total_ms:.0f} ms"
 
 
-def grouped_steps(trace: Trace) -> list[tuple[str, list[TraceStep]]]:
+def grouped_steps(turn_log: TurnLog) -> list[tuple[str, list[TurnLogStep]]]:
     """Steps grouped into consecutive runs of the same stage.
 
     Grouping is positional rather than by a fixed stage order, so a stage that
     recurs (tools called around the LLM node) still reads chronologically.
     """
-    groups: list[tuple[str, list[TraceStep]]] = []
-    for step in trace.steps:
+    groups: list[tuple[str, list[TurnLogStep]]] = []
+    for step in turn_log.steps:
         if groups and groups[-1][0] == step.stage:
             groups[-1][1].append(step)
         else:

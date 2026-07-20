@@ -180,6 +180,23 @@ déterministe, sans tool-calling). L'agent est un `StateGraph` (`velmo.agent_gra
 déterministe (`velmo.routing`) route la majorité des intentions sans LLM, et ne bascule sur le nœud LLM
 outillé (`create_agent` + `build_tools`) que lorsqu'aucune règle ne matche.
 
+### Observabilité : deux mécanismes distincts, à ne pas confondre
+
+- **`TurnLog` (`src/velmo/turn_log.py`)** — journal **in-process** d'un tour. Chaque étage du pipeline
+  (`guardrails`, `memory`, `graph`, `tool`) accepte un `turn_log=` optionnel et y écrit ses steps.
+  Zéro dépendance, zéro réseau, marche hors-ligne. Il alimente l'onglet « 🔍 Déroulé » du Streamlit,
+  les assertions de test, et — via `_tool_signals` dans `agent.py` — les métadonnées `escalated` /
+  `tool_errors` envoyées à Langfuse. C'est le seul mécanisme qui voit les garde-fous et l'écriture
+  mémoire, puisqu'ils tournent **hors** du graphe.
+- **Langfuse (`src/velmo/observability.py`)** — observabilité **de production**. `LangfuseTracer`
+  ouvre un span racine par tour (`handle-turn`) et passe un `CallbackHandler` LangChain au graphe ;
+  ce handler enregistre ensuite **tout seul** les nœuds (`deterministic_node`, `llm_node`), le
+  sous-graphe ReAct de `create_agent` (`model`, `tools`) et les appels LLM, avec tokens et coût.
+  Actif seulement si les `LANGFUSE_*` sont présentes, `NoOpTracer` sinon.
+
+Le mot « trace » est réservé à Langfuse. Le mécanisme maison s'appelle `TurnLog` partout —
+n'introduis pas de variable ni de paramètre nommé `trace` pour le désigner.
+
 ### Tests (`tests/`)
 
 - `tests/acceptance/` = traduction directe des critères d'acceptance du brief (`test_business.py`,

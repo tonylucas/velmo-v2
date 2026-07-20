@@ -1,4 +1,4 @@
-"""The Trace records what business tools returned, not just that they ran.
+"""The TurnLog records what business tools returned, not just that they ran.
 
 Escalation rate and tool-error rate are production metrics (chantier 005c); they
 are read back from these steps rather than by instrumenting all ten tools.
@@ -14,7 +14,7 @@ from velmo.guardrails import GuardrailEngine
 from velmo.kb_store import LocalKB
 from velmo.memory.fact_store import LocalFactStore
 from velmo.tools._common import classify_result
-from velmo.trace import Trace
+from velmo.turn_log import TurnLog
 
 
 def test_classify_result_normalizes_both_escalation_verbs() -> None:
@@ -56,25 +56,25 @@ def test_classify_result_free_text_containing_error_key_is_not_an_error() -> Non
 def test_deterministic_escalation_is_recorded_as_a_tool_step() -> None:
     # O-2024-0103 is shipped: MODIFIABLE_STATUSES excludes it, so cancelling
     # escalates instead of failing silently.
-    trace = Trace()
+    turn_log = TurnLog()
     answer = build_reference_agent().respond(
-        "C-marc-dubois", "Je veux annuler ma commande O-2024-0103, je confirme", trace=trace
+        "C-marc-dubois", "Je veux annuler ma commande O-2024-0103, je confirme", turn_log=turn_log
     )
 
     assert "conseiller" in answer
-    tools = [s for s in trace.steps if s.stage == "tool"]
+    tools = [s for s in turn_log.steps if s.stage == "tool"]
     assert [s.outcome for s in tools] == ["escalate"]
     assert tools[0].name == "cancel_order"
 
 
 def test_deterministic_success_is_recorded_with_the_tool_action() -> None:
     # O-2024-0101 is paid, so cancelling actually goes through.
-    trace = Trace()
+    turn_log = TurnLog()
     build_reference_agent().respond(
-        "C-marc-dubois", "Je veux annuler ma commande O-2024-0101, je confirme", trace=trace
+        "C-marc-dubois", "Je veux annuler ma commande O-2024-0101, je confirme", turn_log=turn_log
     )
 
-    tools = [s for s in trace.steps if s.stage == "tool"]
+    tools = [s for s in turn_log.steps if s.stage == "tool"]
     assert len(tools) == 1
     assert tools[0].outcome == "cancelled"
 
@@ -83,12 +83,12 @@ def test_unowned_order_is_recorded_as_a_business_verdict_not_an_error() -> None:
     # O-2024-0110 belongs to C-sophie-martin: owned_order returns None and the
     # tool reports {"error": "not_found_or_forbidden"} — a customer mistyping or
     # probing an order id, not a technical fault, so it must not read as "error".
-    trace = Trace()
+    turn_log = TurnLog()
     build_reference_agent().respond(
-        "C-marc-dubois", "Je veux annuler ma commande O-2024-0110, je confirme", trace=trace
+        "C-marc-dubois", "Je veux annuler ma commande O-2024-0110, je confirme", turn_log=turn_log
     )
 
-    tools = [s for s in trace.steps if s.stage == "tool"]
+    tools = [s for s in turn_log.steps if s.stage == "tool"]
     assert [s.outcome for s in tools] == ["not_found_or_forbidden"]
 
 
@@ -108,13 +108,13 @@ def test_llm_path_forbidden_order_gets_the_same_outcome_word_as_the_deterministi
             AIMessage(content="Désolé, aucune commande à votre nom."),
         ]
     )
-    trace = Trace()
-    graph = build_graph(session, "C-marc-dubois", None, model, trace=trace)
+    turn_log = TurnLog()
+    graph = build_graph(session, "C-marc-dubois", None, model, turn_log=turn_log)
     graph.invoke(
         {"messages": [HumanMessage(content="Vérifie une commande pour moi")], "matched": False}
     )
 
-    tools = [s for s in trace.steps if s.stage == "tool"]
+    tools = [s for s in turn_log.steps if s.stage == "tool"]
     assert [s.outcome for s in tools] == ["not_found_or_forbidden"]
 
 
@@ -177,17 +177,17 @@ def test_llm_path_forbidden_order_does_not_inflate_agent_tool_errors() -> None:
 def test_a_read_only_turn_records_no_tool_outcome() -> None:
     # Only the modifying path reports a verdict; reads stay out of scope so the
     # escalation metric is not diluted by lookups.
-    trace = Trace()
+    turn_log = TurnLog()
     build_reference_agent().respond(
-        "C-marc-dubois", "Où en est ma commande O-2024-0101 ?", trace=trace
+        "C-marc-dubois", "Où en est ma commande O-2024-0101 ?", turn_log=turn_log
     )
 
-    assert [s for s in trace.steps if s.stage == "tool"] == []
+    assert [s for s in turn_log.steps if s.stage == "tool"] == []
 
 
-def test_running_without_a_trace_still_answers_the_same() -> None:
+def test_running_without_a_turn_log_still_answers_the_same() -> None:
     message = "Je veux annuler ma commande O-2024-0103, je confirme"
     without = build_reference_agent().respond("C-marc-dubois", message)
-    with_trace = build_reference_agent().respond("C-marc-dubois", message, trace=Trace())
+    with_log = build_reference_agent().respond("C-marc-dubois", message, turn_log=TurnLog())
 
-    assert without == with_trace
+    assert without == with_log

@@ -1,18 +1,29 @@
-"""Per-turn execution trace for the demo UI.
+"""In-process record of what ran during one ``Agent.respond`` turn.
 
-Records what actually ran during one ``Agent.respond`` turn — which guardrail
-detectors fired, which graph nodes were traversed, which business tools were
-called, which facts were injected and extracted — so the Streamlit demo can show
-the machinery rather than assert it works.
+Records which guardrail detectors fired, which graph nodes were traversed, which
+business tools were called, which facts were injected and extracted — so the
+Streamlit demo can show the machinery rather than assert it works, and so the
+tests can assert on it synchronously.
 
 Deliberately dependency-free (no Streamlit, no LangGraph, no guardrails import):
-every stage of the pipeline takes an optional ``Trace`` and this module must not
-depend on any of them. Tracing is opt-in — when no ``Trace`` is passed the
-pipeline behaves exactly as before and costs nothing.
+every stage of the pipeline takes an optional ``TurnLog`` and this module must
+not depend on any of them. Recording is opt-in — when no ``TurnLog`` is passed
+the pipeline behaves exactly as before and costs nothing.
 
-Scope note: this is a *local demo* aid, held in Streamlit's session state and
-never persisted. It is not ``GuardrailEngine.events``, which stays the
-compliance journal and records metadata only.
+Not to be confused with two neighbours that record different things:
+
+- ``velmo.observability`` exports a Langfuse *trace* per turn: latency, tokens,
+  cost and prompts, sent over the network, read after the fact. It sees the
+  graph (via the LangChain callback handler) but is blind to the guardrails and
+  the memory writes, which run outside it. A ``TurnLog`` is the reverse: local,
+  synchronous, no credentials, and it spans the whole pipeline. This is also why
+  ``Agent.respond`` builds one internally — ``_tool_signals`` reads the
+  escalation and tool-error flags back out of it to attach them to the Langfuse
+  span.
+- ``GuardrailEngine.events`` stays the compliance journal and records metadata
+  only.
+
+A ``TurnLog`` is held in Streamlit's session state and never persisted.
 """
 
 from __future__ import annotations
@@ -27,7 +38,7 @@ STAGES = ("guardrail_in", "memory", "graph", "tool", "guardrail_out")
 
 
 @dataclass
-class TraceStep:
+class TurnLogStep:
     """One observed step of a turn."""
 
     stage: str
@@ -38,23 +49,23 @@ class TraceStep:
 
 
 @dataclass
-class Trace:
+class TurnLog:
     """Ordered record of the steps taken during a single turn."""
 
-    steps: list[TraceStep] = field(default_factory=list)
+    steps: list[TurnLogStep] = field(default_factory=list)
 
-    def add(self, stage: str, name: str, outcome: str, **detail: object) -> TraceStep:
+    def add(self, stage: str, name: str, outcome: str, **detail: object) -> TurnLogStep:
         """Record an instant step and return it, so the caller can refine it.
 
         Duration is not a parameter here: a `**detail` key named `duration_ms`
         would silently shadow it. Use `timed()` to measure a step instead.
         """
-        step = TraceStep(stage=stage, name=name, outcome=outcome, detail=detail)
+        step = TurnLogStep(stage=stage, name=name, outcome=outcome, detail=detail)
         self.steps.append(step)
         return step
 
     @contextmanager
-    def timed(self, stage: str, name: str) -> Iterator[TraceStep]:
+    def timed(self, stage: str, name: str) -> Iterator[TurnLogStep]:
         """Record a step and time it; the body sets ``outcome``/``detail``.
 
         The step is appended up front and kept even if the body raises, so a

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from . import tools
 from .tools._common import classify_result
 from .tools.memory_tools import forget_user_data, inspect_user_memory
-from .trace import Trace
+from .turn_log import TurnLog
 
 SYSTEM_PROMPT = (
     "Tu es l'assistant de support de Velmo, boutique de maillots de foot collector. "
@@ -105,21 +105,21 @@ def _handle_forget(store, user_id: str, low: str, confirmed: bool) -> str:
 
 
 def run_deterministic(
-    session, user_id: str, kb, message: str, store=None, *, trace: Trace | None = None
+    session, user_id: str, kb, message: str, store=None, *, turn_log: TurnLog | None = None
 ) -> str | None:
     """Route a message to a business tool by regex. Return the reply, or None
     when no deterministic intent matches (LLM fallback).
 
-    A `trace` (demo UI) records which intent matched. The routing decision itself
+    A `turn_log` (demo UI) records which intent matched. The routing decision itself
     lives in `_route`, which names the intent it took.
     """
-    if trace is None:
+    if turn_log is None:
         reply, _ = _route(session, user_id, kb, message, store)
         return reply
     # Timed: the fast path runs the business tools, so this is where a
     # deterministic turn actually spends its milliseconds.
-    with trace.timed("graph", "deterministic_node") as step:
-        reply, intent = _route(session, user_id, kb, message, store, trace=trace)
+    with turn_log.timed("graph", "deterministic_node") as step:
+        reply, intent = _route(session, user_id, kb, message, store, turn_log=turn_log)
         if reply is None:
             step.outcome = "no_match"
         else:
@@ -135,7 +135,7 @@ def _route(
     message: str,
     store=None,
     *,
-    trace: Trace | None = None,
+    turn_log: TurnLog | None = None,
 ) -> tuple[str | None, str | None]:
     """Return (reply, intent) for a message, or (None, None) when nothing matches."""
     low = message.lower()
@@ -150,7 +150,7 @@ def _route(
             order_id,
             lambda: tools.cancel_order(session, order_id, user_id),
             tool="cancel_order",
-            trace=trace,
+            turn_log=turn_log,
         ), "cancel_order"
     if order_id and "adresse" in low:
         return _confirm_or_act(
@@ -161,7 +161,7 @@ def _route(
                 session, order_id, user_id, {"line1": "(à préciser)"}
             ),
             tool="update_shipping_address",
-            trace=trace,
+            turn_log=turn_log,
         ), "update_shipping_address"
     if (
         order_id
@@ -176,7 +176,7 @@ def _route(
             order_id,
             lambda: tools.update_order_item(session, order_id, user_id, new_size),
             tool="update_order_item",
-            trace=trace,
+            turn_log=turn_log,
         ), "update_order_item"
     if order_id and any(w in low for w in ("retour", "échange", "echange", "renvoyer")):
         return _confirm_or_act(
@@ -185,7 +185,7 @@ def _route(
             order_id,
             lambda: tools.create_return(session, order_id, user_id, "Demande client"),
             tool="create_return",
-            trace=trace,
+            turn_log=turn_log,
         ), "create_return"
     if order_id and "rembours" in low:
         amount_match = AMOUNT_RE.search(message)
@@ -196,7 +196,7 @@ def _route(
             order_id,
             lambda: tools.trigger_refund(session, order_id, user_id, amount, "Demande client"),
             tool="trigger_refund",
-            trace=trace,
+            turn_log=turn_log,
         ), "trigger_refund"
 
     if order_id and any(w in low for w in ("suivi", "colis", "livr", "transport", "track")):
@@ -225,7 +225,7 @@ def _confirm_or_act(
     action: Callable[[], dict],
     *,
     tool: str,
-    trace: Trace | None = None,
+    turn_log: TurnLog | None = None,
 ) -> str:
     if not confirmed:
         return (
@@ -233,11 +233,11 @@ def _confirm_or_act(
             "Répondez « je confirme »."
         )
     result = action()
-    if trace is not None:
+    if turn_log is not None:
         # Business tools return either {"error": ...} or {"action": ...} — never
         # both, and never an exception for an expected case. classify_result is
         # the single source of truth shared with the LLM path (agent_graph).
-        trace.add("tool", tool, classify_result(result))
+        turn_log.add("tool", tool, classify_result(result))
     if result.get("error"):
         return f"Je ne trouve pas la commande {order_id} à votre nom."
     if result.get("action") == "escalate":

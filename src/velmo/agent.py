@@ -18,7 +18,7 @@ from .memory.checkpointer import get_checkpointer
 from .memory.extract import Extractor, get_extractor
 from .memory.fact_store import get_fact_store
 from .observability import Tracer, get_tracer
-from .trace import Trace
+from .turn_log import TurnLog
 
 DEFAULT_REFUSAL = (
     "Désolé, je ne peux pas traiter cette demande. Je reste à votre disposition "
@@ -26,14 +26,14 @@ DEFAULT_REFUSAL = (
 )
 
 
-def _tool_signals(trace: Trace | None) -> tuple[bool, int]:
+def _tool_signals(turn_log: TurnLog | None) -> tuple[bool, int]:
     """(escalated, tool_errors) read back from a turn's tool steps.
 
-    Reading the Trace keeps the ten business tools free of instrumentation.
+    Reading the TurnLog keeps the ten business tools free of instrumentation.
     """
-    if trace is None:
+    if turn_log is None:
         return False, 0
-    steps = [step for step in trace.steps if step.stage == "tool"]
+    steps = [step for step in turn_log.steps if step.stage == "tool"]
     return (
         any(step.outcome == "escalate" for step in steps),
         sum(1 for step in steps if step.outcome == "error"),
@@ -63,10 +63,10 @@ class Agent:
         self.extractor: Extractor = extractor if extractor is not None else get_extractor()
         self.tracer: Tracer = tracer if tracer is not None else get_tracer()
 
-    def respond(self, user_id: str, message: str, *, trace: Trace | None = None) -> str:
-        """Answer one turn. Pass a `trace` to record what ran (demo panel only);
+    def respond(self, user_id: str, message: str, *, turn_log: TurnLog | None = None) -> str:
+        """Answer one turn. Pass a `turn_log` to record what ran (demo panel only);
         without one the pipeline behaves exactly as before and costs nothing."""
-        gate_in = self.guardrails.check_input(message, trace=trace)
+        gate_in = self.guardrails.check_input(message, turn_log=turn_log)
         if not gate_in.allowed:
             # Counted so the blocking rate stays measurable, but the offending
             # message never leaves the process: only its verdict does. Wrapped
@@ -92,11 +92,11 @@ class Agent:
             else message
         )
 
-        # An internal Trace is the source of the escalation and tool-error
+        # An internal TurnLog is the source of the escalation and tool-error
         # metrics. Built only when the tracer would use it, so the offline path
         # keeps costing nothing.
-        if trace is None and self.tracer.records:
-            trace = Trace()
+        if turn_log is None and self.tracer.records:
+            turn_log = TurnLog()
         turn = self.tracer.start_turn(user_id, safe_message)
         try:
             answer = agent_graph.answer(
@@ -108,15 +108,15 @@ class Agent:
                 checkpointer=self.checkpointer,
                 thread_id=user_id,
                 store=self.store,
-                trace=trace,
+                turn_log=turn_log,
                 callbacks=turn.callbacks,
             )
 
             facts = list(self.extractor.extract(user_id, [HumanMessage(content=safe_message)]))
             for fact in facts:
                 self.store.write(fact)
-            if trace is not None:
-                trace.add(
+            if turn_log is not None:
+                turn_log.add(
                     "memory",
                     "extract",
                     "written" if facts else "nothing",
@@ -125,12 +125,12 @@ class Agent:
                 )
 
             gate_out = self.guardrails.check_output(
-                answer, identity=self._identity(user_id), trace=trace
+                answer, identity=self._identity(user_id), turn_log=turn_log
             )
             if not gate_out.allowed:
                 answer = gate_out.refusal or DEFAULT_REFUSAL
 
-            escalated, tool_errors = _tool_signals(trace)
+            escalated, tool_errors = _tool_signals(turn_log)
             turn.end(
                 answer=answer,
                 guardrail_in=gate_in.action,
