@@ -36,7 +36,12 @@ class Turn(Protocol):
 
     callbacks: list[Any]
 
-    def end(self, *, answer: str, **metadata: Any) -> None: ...
+    def end(self, *, answer: str, **metadata: Any) -> None:
+        """Close the turn. Must be idempotent: `Agent.respond` wraps the traced
+        body in `try/finally` and unconditionally calls `end` again there, so a
+        raise can never leave a span open — every implementation must tolerate
+        a repeated call as a no-op."""
+        ...
 
 
 class Tracer(Protocol):

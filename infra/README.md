@@ -81,3 +81,32 @@ az containerapp revision set-active -g tlucasRG -n velmo2-tony --revision <révi
   la *branch protection* de `main`.
 - **Sur un tag `v*.*.*`** : [`release.yml`](../.github/workflows/release.yml) rejoue le gate
   et publie une **GitHub Release** portant les scores versionnés (`mlops/report.md` en asset).
+
+## Observabilité (Langfuse)
+
+Le traçage est **désactivé par défaut** : sans clés, l'agent tourne à l'identique.
+Pour l'activer :
+
+1. Créer un compte et un projet sur [cloud.langfuse.com](https://cloud.langfuse.com)
+   (offre gratuite), puis copier les deux clés du projet.
+2. Les poser sur la Container App — la clé secrète est un **secret**, pas une variable :
+
+```bash
+az containerapp secret set -g tlucasRG -n velmo2-tony --secrets lfsecret=<sk-lf-...>
+
+az containerapp update -g tlucasRG -n velmo2-tony --set-env-vars \
+  LANGFUSE_PUBLIC_KEY=<pk-lf-...> \
+  LANGFUSE_SECRET_KEY=secretref:lfsecret \
+  LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+Ce qui apparaît alors dans le dashboard, par tour : la latence, le coût (tokens
+Kimi), la catégorie de garde-fou déclenchée, l'escalade et les erreurs d'outils.
+Les tours d'un même client sont regroupés en conversation (`session_id`).
+
+Ce qui **n'est pas** envoyé : le message brut. Seule la version masquée par
+`check_input` part, et un message bloqué en entrée n'envoie aucun contenu — juste
+son verdict, pour que le taux de blocage reste mesurable.
+
+Le gate d'éval en CI reste **hors-ligne** et n'interroge jamais Langfuse : la note
+bloquante doit rester déterministe et sans dépendance réseau.
