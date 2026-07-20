@@ -88,11 +88,20 @@ métier n'est modifié.**
 > inobservables.
 >
 > Le chantier ajoute donc une étape préalable : faire enregistrer le **verdict**
-> de l'outil (`escalate`, `error`, ou le verbe d'action du tool). Portée
-> volontairement étroite — seul le chemin **modifiant** (`_confirm_or_act`, 5 sites
-> d'appel) et le chemin LLM (lecture des `ToolMessage`) sont instrumentés. Les
-> lectures seules restent hors traçage, pour que le taux d'escalade ne soit pas
-> dilué par des consultations.
+> de l'outil — `escalate`, `error` (échec technique), `not_found_or_forbidden`
+> (refus d'isolation : la commande n'appartient pas à l'appelant), ou le verbe
+> d'action du tool. Ce sont deux choses différentes et elles ne doivent pas se
+> confondre : un client qui se trompe de numéro de commande ne doit pas gonfler
+> le « taux d'erreur technique outils ».
+>
+> Deux chemins, deux portées. Sur le chemin **déterministe**, seules les
+> opérations **modifiantes** sont instrumentées (`_confirm_or_act`, 5 sites
+> d'appel) ; les consultations restent hors traçage. Sur le chemin **LLM**, tous
+> les appels sont enregistrés, lectures comprises, parce qu'ils sont relus depuis
+> les `ToolMessage` — c'est aussi ce qui rend l'arbre d'exécution lisible dans
+> Langfuse. L'asymétrie est sans effet sur les métriques : `escalated` est un
+> booléen par tour (une lecture de plus ne le dilue pas) et `tool_errors` ne
+> compte que `error`.
 
 ## 3. Ce qui est capturé, et par quoi
 
@@ -128,15 +137,16 @@ les exigences PII du brief.
 que la racine du tour, pas ce qui part réellement sur Langfuse Cloud : `turn.callbacks`
 (le `CallbackHandler` LangChain) est transmis à `graph.invoke`, et LangChain
 instrumente **tous les runs imbriqués** du graphe, pas seulement la racine. Concrètement,
-pour un tour donné, part aussi sur Langfuse :
+part aussi sur Langfuse :
 
 - l'historique de conversation restauré par le checkpointer, jusqu'à 30 messages
   (`agent_graph.window_messages`) ;
-- le prompt système envoyé au modèle, **avec les faits mémoire injectés** pour ce
-  client (`agent_graph.select_memory` / `memory.facts.render_facts`) ;
-- le contenu des `ToolMessage` — en particulier `order_to_dict` (`tools/_common.py`)
-  renvoie `shipping_address` en clair pour tout appel outil qui lit ou modifie une
-  commande ;
+- **dès qu'un tour atteint le nœud LLM** — un tour traité en déterministe n'appelle
+  aucun modèle et n'en produit rien : le prompt système envoyé au modèle, **avec les
+  faits mémoire injectés** pour ce client (`agent_graph.select_memory` /
+  `memory.facts.render_facts`), et le contenu des `ToolMessage` — en particulier
+  `order_to_dict` (`tools/_common.py`) renvoie `shipping_address` en clair pour tout
+  appel outil qui lit ou modifie une commande ;
 - la réponse finale elle-même, qui peut légitimement contenir l'**email du client** :
   le garde-fou de sortie (`foreign_email`) ne bloque que les emails qui ne sont **pas**
   celui du client identifié — le sien, lui, passe, puisque c'est le comportement voulu

@@ -108,13 +108,15 @@ Les tours d'un même client sont regroupés en conversation (`session_id`).
 masquage ne part jamais, et un message bloqué en entrée n'envoie aucun contenu (juste
 son verdict, pour que le taux de blocage reste mesurable) — mais ce n'est *pas* la
 même chose que « seul le message masqué est envoyé ». Le handler LangChain instrumente
-tout le graphe, pas que le tour lui-même : ce qui atteint Langfuse Cloud pour chaque
-tour inclut aussi l'historique de conversation restauré du checkpointer (jusqu'à 30
-messages), le prompt système avec les faits mémoire injectés pour ce client, le
-contenu des appels d'outils — y compris l'**adresse de livraison** (`order_to_dict`
-la renvoie en clair) — et la réponse finale, qui peut légitimement contenir l'**email
-du client** (le garde-fou de sortie bloque les emails d'un *autre* client, pas le
-sien). Le hook de masquage à l'export (`mask_otel_spans`) ne rattrape que les numéros
+tout le graphe, pas que le tour lui-même : ce qui atteint Langfuse Cloud inclut aussi
+l'historique de conversation restauré du checkpointer (jusqu'à 30 messages) et la
+réponse finale, qui peut légitimement contenir l'**email du client** (le garde-fou de
+sortie bloque les emails d'un *autre* client, pas le sien). Et **dès qu'un tour passe
+par le nœud LLM** — les tours traités en routage déterministe n'appellent aucun modèle
+et n'en produisent rien — s'y ajoutent le prompt système avec les faits mémoire
+injectés pour ce client, et le contenu des appels d'outils, y compris l'**adresse de
+livraison** (`order_to_dict` la renvoie en clair).
+Le hook de masquage à l'export (`mask_otel_spans`) ne rattrape que les numéros
 de carte (Luhn valide) et les IBAN, la même détection que le garde-fou d'entrée —
 il ne masque ni les adresses, ni les emails, ni les faits mémoire stockés.
 
