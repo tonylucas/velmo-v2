@@ -17,7 +17,7 @@ from typing import Annotated, Literal, TypedDict
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -100,14 +100,38 @@ def build_graph(
 
 
 def _trace_tool_calls(trace: Trace, messages: list[BaseMessage]) -> None:
-    """Record the tools the model chose, read back from the returned messages.
+    """Record the tools the model chose and what they returned.
 
-    The tool calls are already in the AIMessages create_agent returns, so the
-    panel needs no callback handler to see them.
+    The calls are in the AIMessages create_agent returns and the results in the
+    matching ToolMessages, so the panel needs no callback handler to see them.
     """
+    outcomes = {
+        message.tool_call_id: _tool_outcome(message.content)
+        for message in messages
+        if isinstance(message, ToolMessage)
+    }
     for message in messages:
         for call in getattr(message, "tool_calls", None) or []:
-            trace.add("tool", call["name"], "called", args=call.get("args", {}))
+            trace.add(
+                "tool",
+                call["name"],
+                outcomes.get(call["id"], "called"),
+                args=call.get("args", {}),
+            )
+
+
+def _tool_outcome(content: object) -> str:
+    """Classify a tool result read back from a ToolMessage.
+
+    Business tools return dicts; LangChain stringifies them into the message
+    content, so the verdict is matched on the serialized key rather than parsed.
+    """
+    text = str(content)
+    if "'error':" in text or '"error":' in text:
+        return "error"
+    if "'escalate'" in text or '"escalate"' in text:
+        return "escalate"
+    return "ok"
 
 
 def answer(
