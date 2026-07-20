@@ -25,7 +25,7 @@ def test_one_key_alone_is_not_enough(monkeypatch) -> None:
 
 
 def test_the_noop_tracer_declares_that_it_records_nothing() -> None:
-    # Agent.respond uses this to skip building an internal Trace offline.
+    # Agent.respond uses this to skip building an internal TurnLog offline.
     assert NoOpTracer().records is False
 
 
@@ -85,7 +85,7 @@ def test_exported_attributes_are_redacted() -> None:
     )
 
     # Only the offending attribute is patched; the rest is left untouched so
-    # the trace stays useful.
+    # the turn_log stays useful.
     assert list(replacements) == ["gen_ai.completion.0.content"]
     assert "4111" not in replacements["gen_ai.completion.0.content"]
     assert "[REDACTED_CARD]" in replacements["gen_ai.completion.0.content"]

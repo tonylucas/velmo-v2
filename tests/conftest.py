@@ -16,7 +16,7 @@ from velmo.kb_store import LocalKB
 from velmo.llm import OfflineChatModel
 from velmo.memory.fact_store import LocalFactStore
 from velmo.sampledata import seed
-from velmo.trace import Trace
+from velmo.turn_log import TurnLog
 
 EVAL_DIR = Path(__file__).resolve().parent.parent / "eval"
 
@@ -47,19 +47,19 @@ class ScriptedToolCallingChatModel(FakeMessagesListChatModel):
 class AllowAllGuardrails:
     """Garde-fous neutralisés (agent dégradé pour le test de régression).
 
-    Accepte `trace` comme le vrai `GuardrailEngine` — sans rien y écrire, puisque
-    justement aucun détecteur ne tourne : une trace vide est le reflet fidèle
+    Accepte `turn_log` comme le vrai `GuardrailEngine` — sans rien y écrire, puisque
+    justement aucun détecteur ne tourne : un `TurnLog` vide est le reflet fidèle
     d'un agent dont les garde-fous sont débranchés.
     """
 
     def __init__(self) -> None:
         self.events: list[dict] = []
 
-    def check_input(self, message: str, *, trace: Trace | None = None) -> Decision:
+    def check_input(self, message: str, *, turn_log: TurnLog | None = None) -> Decision:
         return Decision(allowed=True, action="allow")
 
     def check_output(
-        self, text: str, *, identity: object | None = None, trace: Trace | None = None
+        self, text: str, *, identity: object | None = None, turn_log: TurnLog | None = None
     ) -> Decision:
         return Decision(allowed=True, action="allow")
 
