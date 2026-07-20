@@ -24,7 +24,7 @@ persistance Postgres (bloquée sur cet abonnement, cf. §3), OIDC (durcissement 
 ### 2a. Cœur CI (aucun cloud requis) — GitHub Actions
 
 - **PR + label `ready-for-eval`** → exécute le **gate d'éval offline** de 005a
-  (`python -m velmo.mlops.score --min-score $EVAL_MIN_SCORE`, défaut `0.8`). C'est le
+  (`python -m velmo.mlops.score --min-score $EVAL_MIN_SCORE`, défaut `0.90`). C'est le
   **check obligatoire au merge**.
 - **Nouveau commit sur la PR (`synchronize`)** → un job **retire le label**
   `ready-for-eval` (permission `pull-requests: write`). Le check redevient manquant →
@@ -43,7 +43,10 @@ n'est **pas** rejouée en CI.
 
 ### 2b. Couche déploiement ACA (détachable) — `deploy.yml`
 
-Sur `push` d'un tag `v*.*.*`, **après** le gate vert :
+Déclenché par `workflow_run` sur la **réussite** de `release`, jamais directement par le
+tag : un gate rouge fait échouer `release`, donc `deploy` ne démarre jamais. Le tag est lu
+dans `github.event.workflow_run.head_branch` et le checkout doit le passer explicitement
+(le ref par défaut d'un `workflow_run` est `main`). Séquence, une fois le gate vert :
 1. Build de l'image Docker de la démo, push vers un **Azure Container Registry** (ACR).
 2. `az containerapp update -n velmo2-tony --image <acr>/velmo:<tag>` → **nouvelle
    révision** de la Container App.

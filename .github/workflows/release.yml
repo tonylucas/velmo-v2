@@ -17,7 +17,7 @@ jobs:
       - run: uv python install 3.11
       - run: uv sync
       - name: Eval gate + report
-        run: uv run python -m velmo.mlops.score --min-score "${MIN_SCORE:-0.8}" --report mlops/report.md | tee /tmp/score.txt
+        run: uv run python -m velmo.mlops.score --min-score "${MIN_SCORE:-0.90}" --report mlops/report.md | tee /tmp/score.txt
         env:
           MIN_SCORE: ${{ vars.EVAL_MIN_SCORE }}
       - name: Publish GitHub Release

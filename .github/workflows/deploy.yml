@@ -1,30 +1,36 @@
 # .github/workflows/deploy.yml
 # Detachable deploy layer. Delete this file to revert to the CI core (eval + release).
+#
+# Gated on the release workflow: deploy only starts once `release` has SUCCEEDED
+# on that tag, so a failed eval gate blocks the production rollout. `workflow_run`
+# gives no tag ref of its own — `head_branch` carries the tag name that triggered
+# `release`, and checkout must use it explicitly (the default ref is main).
 name: deploy
 
 on:
-  push:
-    tags: ['v*.*.*']
+  workflow_run:
+    workflows: [release]
+    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   deploy:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    env:
+      ACR: ${{ secrets.ACR_NAME }}
+      TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
       - name: Azure login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       - name: Build and push image to ACR
         run: az acr build --registry "$ACR" --image "velmo:$TAG" .
-        env:
-          ACR: ${{ secrets.ACR_NAME }}
-          TAG: ${{ github.ref_name }}
       - name: Roll a new Container App revision
         run: az containerapp update -g tlucasRG -n velmo2-tony --image "$ACR.azurecr.io/velmo:$TAG"
-        env:
-          ACR: ${{ secrets.ACR_NAME }}
-          TAG: ${{ github.ref_name }}

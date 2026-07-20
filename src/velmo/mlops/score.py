@@ -1,6 +1,6 @@
 """CLI entrypoint: run the evaluation, write the report, enforce the gate.
 
-`python -m velmo.mlops.score --min-score 0.8` evaluates the offline agent by
+`python -m velmo.mlops.score --min-score 0.90` evaluates the offline agent by
 default (the fast PR check, no secrets). `--prod` evaluates the real stack
 (build_default_agent — Azure Content Safety included) for the tag -> prod
 re-check. Exits non-zero when the gate blocks delivery.
@@ -61,7 +61,7 @@ def _summary(scores: Scores) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="velmo.mlops.score")
-    parser.add_argument("--min-score", type=float, default=0.8)
+    parser.add_argument("--min-score", type=float, default=0.90)
     parser.add_argument("--prod", action="store_true")
     parser.add_argument("--report", type=Path, default=Path("mlops/report.md"))
     args = parser.parse_args(argv)
