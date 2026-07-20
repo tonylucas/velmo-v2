@@ -48,7 +48,7 @@ class AllowAllGuardrails:
     """Garde-fous neutralisés (agent dégradé pour le test de régression).
 
     Accepte `turn_log` comme le vrai `GuardrailEngine` — sans rien y écrire, puisque
-    justement aucun détecteur ne tourne : une turn_log vide est le reflet fidèle
+    justement aucun détecteur ne tourne : un `TurnLog` vide est le reflet fidèle
     d'un agent dont les garde-fous sont débranchés.
     """
 
