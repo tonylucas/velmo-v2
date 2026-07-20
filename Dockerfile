@@ -18,7 +18,7 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 COPY scripts ./scripts
 
-RUN uv sync --no-dev --extra demo --extra llm --extra vector
+RUN uv sync --no-dev --extra demo --extra llm --extra vector --extra obs
 
 # Bake the embedding model into the image so runtime never contacts HuggingFace.
 # Requires the HuggingFace Hub reachable DURING BUILD (one-shot).

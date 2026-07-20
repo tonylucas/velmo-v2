@@ -64,13 +64,14 @@ class AllowAllGuardrails:
         return Decision(allowed=True, action="allow")
 
 
-def build_reference_agent(store=None) -> Agent:
+def build_reference_agent(store=None, *, tracer=None) -> Agent:
     return Agent(
         chat_model=OfflineChatModel(),
         guardrails=GuardrailEngine(),
         session=seeded_session(),
         kb=LocalKB(),
         store=store if store is not None else LocalFactStore(),
+        tracer=tracer,
     )
 
 

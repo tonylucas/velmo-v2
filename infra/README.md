@@ -81,3 +81,55 @@ az containerapp revision set-active -g tlucasRG -n velmo2-tony --revision <révi
   la *branch protection* de `main`.
 - **Sur un tag `v*.*.*`** : [`release.yml`](../.github/workflows/release.yml) rejoue le gate
   et publie une **GitHub Release** portant les scores versionnés (`mlops/report.md` en asset).
+
+## Observabilité (Langfuse)
+
+Le traçage est **désactivé par défaut** : sans clés, l'agent tourne à l'identique.
+Pour l'activer :
+
+1. Créer un compte et un projet sur [cloud.langfuse.com](https://cloud.langfuse.com)
+   (offre gratuite), puis copier les deux clés du projet.
+2. Les poser sur la Container App — la clé secrète est un **secret**, pas une variable :
+
+```bash
+az containerapp secret set -g tlucasRG -n velmo2-tony --secrets lfsecret=<sk-lf-...>
+
+az containerapp update -g tlucasRG -n velmo2-tony --set-env-vars \
+  LANGFUSE_PUBLIC_KEY=<pk-lf-...> \
+  LANGFUSE_SECRET_KEY=secretref:lfsecret \
+  LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+Ce qui apparaît alors dans le dashboard, par tour : la latence, le coût (tokens
+Kimi), la catégorie de garde-fou déclenchée, l'escalade et les erreurs d'outils.
+Les tours d'un même client sont regroupés en conversation (`session_id`).
+
+**Attention à ce que poser ces clés implique réellement.** Le message brut avant
+masquage ne part jamais, et un message bloqué en entrée n'envoie aucun contenu (juste
+son verdict, pour que le taux de blocage reste mesurable) — mais ce n'est *pas* la
+même chose que « seul le message masqué est envoyé ». Le handler LangChain instrumente
+tout le graphe, pas que le tour lui-même : ce qui atteint Langfuse Cloud inclut aussi
+l'historique de conversation restauré du checkpointer (jusqu'à 30 messages) et la
+réponse finale, qui peut légitimement contenir l'**email du client** (le garde-fou de
+sortie bloque les emails d'un *autre* client, pas le sien). Et **dès qu'un tour passe
+par le nœud LLM** — les tours traités en routage déterministe n'appellent aucun modèle
+et n'en produisent rien — s'y ajoutent le prompt système avec les faits mémoire
+injectés pour ce client, et le contenu des appels d'outils, y compris l'**adresse de
+livraison** (`order_to_dict` la renvoie en clair).
+Le hook de masquage à l'export (`mask_otel_spans`) ne rattrape que les numéros
+de carte (Luhn valide) et les IBAN, la même détection que le garde-fou d'entrée —
+il ne masque ni les adresses, ni les emails, ni les faits mémoire stockés.
+
+Concrètement : activer `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` en prod revient à
+envoyer à Langfuse Cloud (service externe, hors du périmètre Postgres/Chroma) le
+contenu métier de la conversation de chaque client — pas seulement des métriques
+agrégées. C'est un compromis assumé pour obtenir coût et latence par tour sans
+instrumentation manuelle ; ce n'est pas une anonymisation de la conversation.
+`GuardrailEngine.events` (le journal de conformité) reste, lui, strictement local —
+seules des métadonnées agrégées (action, catégorie) partent sur la trace.
+
+Le gate d'éval en CI reste **hors-ligne** et n'interroge jamais Langfuse, par
+construction : `velmo.mlops.score` (sans `--prod`) construit l'agent avec
+`tracer=NoOpTracer()` explicitement, indépendamment des variables `LANGFUSE_*`
+présentes ou non sur la machine qui l'exécute — la note bloquante doit rester
+déterministe et sans dépendance réseau.

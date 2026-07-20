@@ -14,6 +14,7 @@ import re
 from collections.abc import Callable
 
 from . import tools
+from .tools._common import classify_result
 from .tools.memory_tools import forget_user_data, inspect_user_memory
 from .trace import Trace
 
@@ -118,7 +119,7 @@ def run_deterministic(
     # Timed: the fast path runs the business tools, so this is where a
     # deterministic turn actually spends its milliseconds.
     with trace.timed("graph", "deterministic_node") as step:
-        reply, intent = _route(session, user_id, kb, message, store)
+        reply, intent = _route(session, user_id, kb, message, store, trace=trace)
         if reply is None:
             step.outcome = "no_match"
         else:
@@ -127,7 +128,15 @@ def run_deterministic(
     return reply
 
 
-def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | None, str | None]:
+def _route(
+    session,
+    user_id: str,
+    kb,
+    message: str,
+    store=None,
+    *,
+    trace: Trace | None = None,
+) -> tuple[str | None, str | None]:
     """Return (reply, intent) for a message, or (None, None) when nothing matches."""
     low = message.lower()
     order = ORDER_RE.search(message)
@@ -140,6 +149,8 @@ def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | N
             "annuler",
             order_id,
             lambda: tools.cancel_order(session, order_id, user_id),
+            tool="cancel_order",
+            trace=trace,
         ), "cancel_order"
     if order_id and "adresse" in low:
         return _confirm_or_act(
@@ -149,6 +160,8 @@ def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | N
             lambda: tools.update_shipping_address(
                 session, order_id, user_id, {"line1": "(à préciser)"}
             ),
+            tool="update_shipping_address",
+            trace=trace,
         ), "update_shipping_address"
     if (
         order_id
@@ -162,6 +175,8 @@ def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | N
             f"changer la taille (vers {new_size}) de",
             order_id,
             lambda: tools.update_order_item(session, order_id, user_id, new_size),
+            tool="update_order_item",
+            trace=trace,
         ), "update_order_item"
     if order_id and any(w in low for w in ("retour", "échange", "echange", "renvoyer")):
         return _confirm_or_act(
@@ -169,6 +184,8 @@ def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | N
             "ouvrir un retour pour",
             order_id,
             lambda: tools.create_return(session, order_id, user_id, "Demande client"),
+            tool="create_return",
+            trace=trace,
         ), "create_return"
     if order_id and "rembours" in low:
         amount_match = AMOUNT_RE.search(message)
@@ -178,6 +195,8 @@ def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | N
             f"rembourser {amount:.0f}€ sur",
             order_id,
             lambda: tools.trigger_refund(session, order_id, user_id, amount, "Demande client"),
+            tool="trigger_refund",
+            trace=trace,
         ), "trigger_refund"
 
     if order_id and any(w in low for w in ("suivi", "colis", "livr", "transport", "track")):
@@ -199,13 +218,26 @@ def _route(session, user_id: str, kb, message: str, store=None) -> tuple[str | N
     return None, None
 
 
-def _confirm_or_act(confirmed: bool, label: str, order_id: str, action: Callable[[], dict]) -> str:
+def _confirm_or_act(
+    confirmed: bool,
+    label: str,
+    order_id: str,
+    action: Callable[[], dict],
+    *,
+    tool: str,
+    trace: Trace | None = None,
+) -> str:
     if not confirmed:
         return (
             f"Pour {label} la commande {order_id}, pouvez-vous confirmer ? "
             "Répondez « je confirme »."
         )
     result = action()
+    if trace is not None:
+        # Business tools return either {"error": ...} or {"action": ...} — never
+        # both, and never an exception for an expected case. classify_result is
+        # the single source of truth shared with the LLM path (agent_graph).
+        trace.add("tool", tool, classify_result(result))
     if result.get("error"):
         return f"Je ne trouve pas la commande {order_id} à votre nom."
     if result.get("action") == "escalate":

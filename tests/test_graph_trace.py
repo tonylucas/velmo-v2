@@ -125,6 +125,36 @@ def test_answer_records_injected_memory_facts(session) -> None:
     assert step.detail["count"] >= 1
 
 
+def test_escalation_with_free_text_reason_is_classified_escalate_not_error(session) -> None:
+    # escalate_to_human's `reason` is composed by the model from the
+    # conversation and can contain arbitrary text — including something that
+    # looks like an "error" key when the dict is stringified into the
+    # ToolMessage. Substring matching would misclassify this; parsing the
+    # literal and reading `action` must not.
+    model = ScriptedToolCallingChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "escalate_to_human",
+                        "args": {"reason": "customer said 'error': cannot proceed"},
+                        "id": "call_1",
+                    }
+                ],
+            ),
+            AIMessage(content="Je transmets votre demande à un conseiller."),
+        ]
+    )
+    trace = Trace()
+    agent_graph.answer(
+        session, "C-marc-dubois", LocalKB(), "Raconte-moi un truc", chat_model=model, trace=trace
+    )
+
+    tools_steps = [s for s in trace.steps if s.stage == "tool"]
+    assert [s.outcome for s in tools_steps] == ["escalate"]
+
+
 def test_answer_without_a_trace_is_unaffected(session) -> None:
     reply = agent_graph.answer(
         session, "C-marc-dubois", LocalKB(), "Où en est ma commande O-2024-0101 ?"

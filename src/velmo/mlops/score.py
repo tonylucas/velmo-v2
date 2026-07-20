@@ -23,12 +23,22 @@ from velmo.mlops import (
 
 
 def build_offline_agent() -> Agent:
-    """Assemble a fully offline agent (seeded SQLite, LocalKB, LocalFactStore)."""
+    """Assemble a fully offline agent (seeded SQLite, LocalKB, LocalFactStore).
+
+    Passes `tracer=NoOpTracer()` explicitly rather than letting `Agent` default
+    to `get_tracer()`. `get_tracer()` reads `LANGFUSE_*` from the environment,
+    so on any host that exports those (the Container App itself, or a dev shell
+    with the keys loaded) the "offline" gate would silently start exporting —
+    a span per eval turn flushed over the network, inflating the reported
+    `latency_ms` with real HTTP round-trips. The offline gate's determinism
+    must hold by construction, not by hoping the environment is clean.
+    """
     from velmo.db import fresh_sqlite_session
     from velmo.guardrails import GuardrailEngine
     from velmo.kb_store import LocalKB
     from velmo.llm import OfflineChatModel
     from velmo.memory.fact_store import LocalFactStore
+    from velmo.observability import NoOpTracer
     from velmo.sampledata import seed
 
     session = fresh_sqlite_session()
@@ -39,6 +49,7 @@ def build_offline_agent() -> Agent:
         session=session,
         kb=LocalKB(),
         store=LocalFactStore(),
+        tracer=NoOpTracer(),
     )
 
 

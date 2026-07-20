@@ -12,12 +12,13 @@ graph with only the new message; the runtime loads and persists the rest.
 
 from __future__ import annotations
 
+import ast
 from contextlib import nullcontext
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -25,6 +26,7 @@ from langgraph.graph.message import add_messages
 from .agent_tools import build_tools
 from .llm import get_chat_model
 from .routing import SYSTEM_PROMPT, run_deterministic
+from .tools._common import classify_result
 from .trace import Trace
 
 
@@ -100,14 +102,44 @@ def build_graph(
 
 
 def _trace_tool_calls(trace: Trace, messages: list[BaseMessage]) -> None:
-    """Record the tools the model chose, read back from the returned messages.
+    """Record the tools the model chose and what they returned.
 
-    The tool calls are already in the AIMessages create_agent returns, so the
-    panel needs no callback handler to see them.
+    The calls are in the AIMessages create_agent returns and the results in the
+    matching ToolMessages, so the panel needs no callback handler to see them.
     """
+    outcomes = {
+        message.tool_call_id: _tool_outcome(message.content)
+        for message in messages
+        if isinstance(message, ToolMessage)
+    }
     for message in messages:
         for call in getattr(message, "tool_calls", None) or []:
-            trace.add("tool", call["name"], "called", args=call.get("args", {}))
+            trace.add(
+                "tool",
+                call["name"],
+                outcomes.get(call["id"], "called"),
+                args=call.get("args", {}),
+            )
+
+
+def _tool_outcome(content: object) -> str:
+    """Classify a tool result read back from a ToolMessage.
+
+    Business tools return dicts; LangChain stringifies them into the message
+    content (Python repr), so we parse it back rather than matching substrings.
+    Substring matching is unsafe here: some tools carry free text composed by
+    the LLM (e.g. escalate_to_human's `reason`), and that text can legitimately
+    contain a fragment like `'error':` without the call having failed. Parsing
+    the literal and delegating to `classify_result` reads the actual `action`/
+    `error` keys instead of guessing from raw text.
+    """
+    try:
+        parsed = ast.literal_eval(str(content))
+    except (ValueError, SyntaxError):
+        return "ok"
+    if not isinstance(parsed, dict):
+        return "ok"
+    return classify_result(parsed)
 
 
 def answer(
@@ -121,6 +153,7 @@ def answer(
     thread_id: str | None = None,
     store=None,
     trace: Trace | None = None,
+    callbacks: list[Any] | None = None,
 ) -> str:
     """Run one turn through the agent graph and return the final reply text."""
     if chat_model is None:
@@ -141,10 +174,16 @@ def answer(
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
     graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store, trace)
-    config = {"configurable": {"thread_id": thread_id}} if checkpointer is not None else None
+    # Both keys are optional and independent: a turn can have a checkpointer with
+    # no callbacks (offline) or callbacks with no checkpointer (a bare graph).
+    config: dict[str, Any] = {}
+    if checkpointer is not None:
+        config["configurable"] = {"thread_id": thread_id}
+    if callbacks:
+        config["callbacks"] = callbacks
     result = graph.invoke(
         {"messages": [HumanMessage(content=message)], "matched": False},
-        config,
+        config or None,
     )
     return result["messages"][-1].content
 
