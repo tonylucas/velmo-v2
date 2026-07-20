@@ -66,3 +66,30 @@ def test_exported_attributes_are_redacted() -> None:
 
 def test_clean_attributes_produce_no_patch() -> None:
     assert observability._redact_attributes({"gen_ai.completion.0.content": "Bonjour !"}) == {}
+
+
+def test_langfuse_turn_end_is_idempotent(monkeypatch) -> None:
+    # Agent.respond's error-closing `finally` guard always calls end() a
+    # second time, even on the normal path. A second call must be a clean
+    # no-op: it must not touch the client again, which by then could be
+    # current for a completely different span.
+    import sys
+    from types import ModuleType
+    from unittest.mock import MagicMock
+
+    fake_langfuse = ModuleType("langfuse")
+    fake_langfuse.propagate_attributes = MagicMock(return_value=MagicMock())  # type: ignore[attr-defined]
+    fake_langchain = ModuleType("langfuse.langchain")
+    fake_langchain.CallbackHandler = MagicMock(return_value=MagicMock())  # type: ignore[attr-defined]
+    fake_langfuse.langchain = fake_langchain  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langfuse", fake_langfuse)
+    monkeypatch.setitem(sys.modules, "langfuse.langchain", fake_langchain)
+
+    client = MagicMock()
+    turn = observability.LangfuseTurn(client, "pk-lf-test", "C-marc-dubois", "bonjour", "v1")
+
+    turn.end(answer="salut")
+    turn.end(answer="should be ignored", error=True)
+
+    assert client.update_current_span.call_count == 1
+    assert client.flush.call_count == 1

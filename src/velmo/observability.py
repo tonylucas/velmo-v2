@@ -86,6 +86,7 @@ class LangfuseTurn:
         from langfuse.langchain import CallbackHandler
 
         self._client = client
+        self._ended = False
         self._stack = ExitStack()
         self._stack.enter_context(
             # One trace per turn, one session per conversation — the structure
@@ -106,6 +107,12 @@ class LangfuseTurn:
         self.callbacks: list[Any] = [CallbackHandler(public_key=public_key)]
 
     def end(self, *, answer: str, **metadata: Any) -> None:
+        # Idempotent: a second call (e.g. the `finally` guard in Agent.respond
+        # after the normal path already closed the turn) must be a clean no-op
+        # rather than touching whatever span happens to be current by then.
+        if self._ended:
+            return
+        self._ended = True
         # The metadata lands on the root span: the v4 SDK has no
         # `update_current_trace`, and these values are only known now.
         self._client.update_current_span(output=answer, metadata=metadata)

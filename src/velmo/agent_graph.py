@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ast
 from contextlib import nullcontext
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
@@ -153,6 +153,7 @@ def answer(
     thread_id: str | None = None,
     store=None,
     trace: Trace | None = None,
+    callbacks: list[Any] | None = None,
 ) -> str:
     """Run one turn through the agent graph and return the final reply text."""
     if chat_model is None:
@@ -173,10 +174,16 @@ def answer(
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
     graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store, trace)
-    config = {"configurable": {"thread_id": thread_id}} if checkpointer is not None else None
+    # Both keys are optional and independent: a turn can have a checkpointer with
+    # no callbacks (offline) or callbacks with no checkpointer (a bare graph).
+    config: dict[str, Any] = {}
+    if checkpointer is not None:
+        config["configurable"] = {"thread_id": thread_id}
+    if callbacks:
+        config["callbacks"] = callbacks
     result = graph.invoke(
         {"messages": [HumanMessage(content=message)], "matched": False},
-        config,
+        config or None,
     )
     return result["messages"][-1].content
 
