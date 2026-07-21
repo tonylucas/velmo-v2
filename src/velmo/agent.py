@@ -8,6 +8,8 @@ garde-fous de contenu sont encore des stubs (chantier 004).
 
 from __future__ import annotations
 
+import logging
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -17,8 +19,11 @@ from .guardrails import GuardrailEngine, Identity
 from .memory.checkpointer import get_checkpointer
 from .memory.extract import Extractor, get_extractor
 from .memory.fact_store import get_fact_store
+from .memory.facts import Fact
 from .observability import Tracer, get_tracer
 from .turn_log import TurnLog
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_REFUSAL = (
     "Désolé, je ne peux pas traiter cette demande. Je reste à votre disposition "
@@ -112,14 +117,17 @@ class Agent:
                 traced_turn=turn,
             )
 
-            facts = list(self.extractor.extract(user_id, [HumanMessage(content=safe_message)]))
-            for fact in facts:
-                self.store.write(fact)
+            # Memory extraction enriches the next turn; it is not what the customer
+            # asked for, and by this point `answer` is already computed. The
+            # production extractor runs LangMem over a real model, so a schema
+            # mismatch, a rate limit or a library bug there must not discard a
+            # perfectly good reply — the turn degrades to "no new facts learned".
+            facts, extraction_failed = self._extract_facts(user_id, safe_message)
             if turn_log is not None:
                 turn_log.add(
                     "memory",
                     "extract",
-                    "written" if facts else "nothing",
+                    "error" if extraction_failed else ("written" if facts else "nothing"),
                     count=len(facts),
                     keys=[f.key for f in facts],
                 )
@@ -140,6 +148,7 @@ class Agent:
                 escalated=escalated,
                 tool_errors=tool_errors,
                 facts_written=len(facts),
+                extraction_failed=extraction_failed,
             )
             return answer
         finally:
@@ -148,6 +157,28 @@ class Agent:
             # idempotent, so the normal path above is unaffected by this second
             # call.
             turn.end(answer="[unhandled error]", error=True)
+
+    def _extract_facts(self, user_id: str, message: str) -> tuple[list[Fact], bool]:
+        """Extract and store durable facts. Returns (facts, failed).
+
+        Never raises: the caller already holds the answer, and losing it to a
+        best-effort enrichment step is a worse outcome than losing the facts.
+        The catch is deliberately broad — the production extractor drives a real
+        model through LangMem, so the failure modes are open-ended.
+
+        The failure is logged and surfaced on the turn (`extract` step outcome,
+        `extraction_failed` metadata) rather than swallowed: an extractor that
+        quietly stops learning looks exactly like a customer who said nothing
+        memorable, which is its own kind of bug.
+        """
+        try:
+            facts = list(self.extractor.extract(user_id, [HumanMessage(content=message)]))
+        except Exception:
+            logger.exception("Memory extraction failed for %s; the turn continues", user_id)
+            return [], True
+        for fact in facts:
+            self.store.write(fact)
+        return facts, False
 
     def _identity(self, user_id: str) -> Identity:
         """Build the session customer's identity allow-list (email) for the output
