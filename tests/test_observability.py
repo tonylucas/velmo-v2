@@ -201,3 +201,49 @@ def test_langfuse_turn_end_closes_the_stack_even_when_update_current_span_raises
     # spite of the raise — that is what keeps the OTel context from leaking.
     span_cm.__exit__.assert_called_once()
     propagate_cm.__exit__.assert_called_once()
+
+
+def test_langfuse_turn_record_retrieval_starts_a_retriever_observation(monkeypatch) -> None:
+    # as_type="retriever" is the literal the whole chantier depends on: evaluators
+    # and dashboards in Langfuse filter on observation type, so a regression to
+    # as_type="span" would make the retrieved context invisible to them while
+    # every other test still passed.
+    import sys
+    from types import ModuleType
+    from unittest.mock import MagicMock
+
+    fake_langfuse = ModuleType("langfuse")
+    fake_langfuse.propagate_attributes = MagicMock(return_value=MagicMock())  # type: ignore[attr-defined]
+    fake_langchain = ModuleType("langfuse.langchain")
+    fake_langchain.CallbackHandler = MagicMock(return_value=MagicMock())  # type: ignore[attr-defined]
+    fake_langfuse.langchain = fake_langchain  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langfuse", fake_langfuse)
+    monkeypatch.setitem(sys.modules, "langfuse.langchain", fake_langchain)
+
+    client = MagicMock()
+    observation = client.start_observation.return_value
+    turn = observability.LangfuseTurn(client, "pk-lf-test", "C-marc-dubois", "bonjour", "v1")
+
+    turn.record_retrieval("retrieve-memory", "bonjour", ["taille : fait du L"])
+
+    client.start_observation.assert_called_once_with(
+        name="retrieve-memory",
+        as_type="retriever",
+        input="bonjour",
+        output=["taille : fait du L"],
+    )
+    observation.end.assert_called_once_with()
+
+
+def test_a_noop_turn_swallows_a_recorded_retrieval() -> None:
+    turn = NoOpTracer().start_turn("C-marc-dubois", "bonjour")
+
+    assert turn.record_retrieval("retrieve-memory", "bonjour", ["taille : fait du L"]) is None
+
+
+def test_the_memory_retrieval_span_name_is_stable() -> None:
+    # Langfuse treats observation names as an API: dashboards, saved views and
+    # evaluators all match on them, so a rename silently breaks them. Pinning the
+    # value here makes an accidental rename a test failure rather than a silent
+    # gap in someone's dashboard.
+    assert observability.MEMORY_RETRIEVAL_NAME == "retrieve-memory"

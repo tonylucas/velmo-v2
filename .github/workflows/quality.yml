@@ -17,11 +17,18 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
 
+      # --extra obs installs langfuse, which two observability tests need: they
+      # exercise the export-time masking hook that keeps card numbers out of the
+      # traces. A bare `uv sync` leaves them failing on import.
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra obs
 
-      - name: Acceptance suite
-        run: uv run pytest tests/acceptance/ -v
+      # The whole suite, not just tests/acceptance/. Running only the acceptance
+      # directory left 204 of 230 tests unexecuted in CI — including every test
+      # guarding PII masking, deterministic routing and tool-outcome classification.
+      # A test that never runs reports no failure, so the gap was invisible.
+      - name: Test suite
+        run: uv run pytest tests/ -v
 
       - name: Quality gate
         run: uv run python -m velmo.mlops.score --min-score 0.90
