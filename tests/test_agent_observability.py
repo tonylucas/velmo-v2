@@ -127,26 +127,32 @@ def test_the_answer_is_identical_with_and_without_a_tracer() -> None:
     assert without == with_tracer
 
 
-class RaisingExtractor:
-    """Extractor double that always raises, to exercise the `finally` guard
-    that closes the turn even when the body of `respond` blows up."""
+class RaisingGuardrails(GuardrailEngine):
+    """Guardrail engine whose output check always raises, to exercise the
+    `finally` guard that closes the turn even when the body of `respond` blows
+    up.
 
-    def extract(self, user_id: str, messages: list[Any]) -> list[Any]:
+    The output check is used rather than the extractor: `respond` deliberately
+    absorbs extractor failures so a best-effort enrichment step cannot cost the
+    customer their answer. The output guardrail is on the critical path and
+    stays unguarded, so it still reaches the `finally`.
+    """
+
+    def check_output(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("boom")
 
 
 def test_a_turn_that_raises_mid_response_is_still_closed_exactly_once() -> None:
     # A raise between start_turn and the normal end() call (here, the
-    # extraction step) must not leave the turn open: the finally guard in
+    # output guardrail) must not leave the turn open: the finally guard in
     # Agent.respond is what closes it, and it must do so exactly once.
     tracer = RecordingTracer()
     agent = Agent(
         chat_model=OfflineChatModel(),
-        guardrails=GuardrailEngine(),
+        guardrails=RaisingGuardrails(),
         session=seeded_session(),
         kb=LocalKB(),
         store=LocalFactStore(),
-        extractor=RaisingExtractor(),
         tracer=tracer,
     )
 
