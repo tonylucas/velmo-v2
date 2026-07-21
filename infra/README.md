@@ -133,3 +133,77 @@ construction : `velmo.mlops.score` (sans `--prod`) construit l'agent avec
 `tracer=NoOpTracer()` explicitement, indépendamment des variables `LANGFUSE_*`
 présentes ou non sur la machine qui l'exécute — la note bloquante doit rester
 déterministe et sans dépendance réseau.
+
+## Qualité des réponses (évaluateur Langfuse)
+
+Le score livré par le chantier 005d est **`relevance`** : la réponse répond-elle à la
+question posée ? Il est produit par un **évaluateur Langfuse**, pas par du code de ce
+dépôt — le scoring est de la configuration dans l'interface, ce qui est précisément
+pourquoi ce chantier n'ajoute aucune dépendance.
+
+`relevance` n'a besoin que de deux champs, `query` et `generation`, tous deux portés
+par l'observation racine `handle-turn`. Rien à mapper d'exotique.
+
+Prérequis : les clés Langfuse sont posées (section précédente), et une **LLM
+Connection** est configurée dans Langfuse (Settings → LLM Connections) avec un modèle
+supportant les **sorties structurées**. Vérifié en pratique avec `Kimi-K2.6` via Azure
+Foundry.
+
+1. Dans le projet Langfuse : créer un évaluateur à partir du template **relevance**
+   du catalogue.
+2. Cibler les **observations**, filtrées sur le nom `handle-turn` — l'observation
+   racine d'un tour, celle qui porte le message client et la réponse finale.
+3. Mapper les deux variables, sans JsonPath (ce sont des chaînes plates) :
+   - `query` → Object Field **Input** ;
+   - `generation` → Object Field **Output**.
+   L'aperçu en direct montre le prompt rempli avec de vraies données ; « Input: » y est
+   un titre de section du prompt du juge, pas un champ vide.
+4. Régler l'échantillonnage (5 à 10 % suffit en régime permanent ; 100 % est
+   raisonnable le temps de quelques messages de test) et activer.
+
+**L'évaluateur ne rejoue pas le passé.** Les scores se posent à l'arrivée de la
+donnée : une trace déjà présente au moment de l'activation ne sera jamais notée. Pour
+vérifier que ça marche, envoyer un **nouveau** message, puis ouvrir cette trace →
+observation `handle-turn` → le score et le raisonnement du juge y sont attachés.
+
+**Exclure les tours bloqués.** Un message refusé par le garde-fou d'entrée apparaît
+comme `[blocked input]` → `[refused]`. Un juge de pertinence le note ~0, alors que le
+refus est le comportement correct. Filtrer sur la métadonnée `guardrail_in` pour les
+sortir de l'échantillon, sinon ils tirent la moyenne vers le bas sans rien vouloir dire.
+
+**Où lire les échecs.** Ils ne sont pas sur la trace applicative : chaque exécution du
+juge crée **sa propre trace**. Filtrer le tableau des traces sur l'environnement
+`langfuse-llm-as-a-judge` donne le statut de chaque évaluation (`Completed`, `Error`,
+`Delayed` pour un rate limit, `Pending`). Aucune ligne du tout = l'évaluateur n'a
+jamais été déclenché.
+
+### Pourquoi pas `faithfulness`
+
+Le chantier expose bien l'observation `retrieve-memory` (type `retriever`), qui rend
+enfin visible ce que la recherche mémoire a récupéré — précieux pour déboguer une
+mauvaise réponse. Mais `faithfulness` n'est **pas** activé, pour deux raisons établies
+en le configurant pour de vrai :
+
+1. **Langfuse ne peut pas le câbler.** Un évaluateur au niveau observation ne voit que
+   l'observation qu'il cible : la documentation précise qu'il « ne charge pas les
+   observations sœurs ou filles de la même trace ». Impossible donc de cibler la
+   `generation` tout en lisant le `contexts` sur `retrieve-memory`. Il faudrait
+   recopier les documents sur l'observation racine.
+2. **Il mesurerait la mauvaise chose.** Le contexte mémoire, ce sont des faits sur le
+   client (`taille : fait du L`), pas la source des réponses. L'agent se fonde sur la
+   FAQ (`search_kb`) et sur Postgres. Un juge `faithfulness` nourri des faits mémoire
+   noterait « non fidèles » des réponses correctes — d'autant que la mémoire part vide
+   et le reste longtemps pour un nouveau client.
+
+Le vrai risque d'hallucination du produit est d'inventer une politique de retour ou un
+délai de livraison, donc la **FAQ**. Mesurer ça demanderait d'exposer les résultats de
+`search_kb` sur l'observation racine — un chantier à part, pas fait ici.
+
+**Ce qui n'est pas scoré, et pourquoi.** Les tours traités par le **routage
+déterministe** répondent par un gabarit sans appeler de modèle. Ils portent quand même
+un `handle-turn`, donc ils entrent dans l'échantillon : leur score de pertinence est
+lisible, mais il mesure la qualité des gabarits, pas celle du LLM.
+
+**Le gate CI reste hors-ligne.** Ces scores vivent sur les traces de production et
+n'entrent jamais dans `mlops/report.md` : faire dépendre la note bloquante d'un juge
+LLM la rendrait non déterministe, l'inverse de ce que garantit le chantier 005a.
