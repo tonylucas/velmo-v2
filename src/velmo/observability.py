@@ -1,9 +1,11 @@
-"""Production observability: one Langfuse trace per conversational turn.
+"""Production observability: one Langfuse trace per conversational turn, and
+the Langfuse-managed system prompt those turns run against.
 
 Same seam as `get_kb()` / `get_chat_model()` / `get_fact_store()`: the real
 backend when the environment carries credentials, a no-op otherwise. Without
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` the whole test suite runs on
-`NoOpTracer` and a turn costs two method calls.
+`NoOpTracer` and a turn costs two method calls; `Tracer.get_prompt` likewise
+falls back to the literal text with no network call.
 
 Cost and token usage are only visible to the LangChain callback handler, which
 is why `Turn` exposes `callbacks` for the graph to consume rather than timing
@@ -18,7 +20,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from typing import Any, Protocol
 
 from .guardrails.detectors import scan_secrets
@@ -34,6 +36,72 @@ TURN_SPAN_NAME = "handle-turn"
 # as TURN_SPAN_NAME: an evaluator or a saved view that matches on this name breaks
 # silently if it changes, so it is pinned by a test.
 MEMORY_RETRIEVAL_NAME = "retrieve-memory"
+
+# Lowercase, hyphenated, feature-scoped — the langfuse skill's prompt-naming
+# convention.
+SYSTEM_PROMPT_NAME = "velmo-support-system"
+
+# The literal prompt text: the offline default, and the `fallback=` Langfuse
+# resolves to if the managed prompt is unreachable. One string, so the two
+# paths can never drift apart.
+SYSTEM_PROMPT_FALLBACK = (
+    "Tu es l'assistant de support de Velmo, boutique de maillots de foot collector. "
+    "Tu traites la gestion de commandes de niveau 1 avec courtoisie et précision."
+)
+
+
+class SystemPrompt(Protocol):
+    """A compiled system prompt: Langfuse-managed in prod, the literal
+    fallback text offline — same seam as `Tracer`/`Turn`.
+
+    `link()` wraps the LLM call so the resulting generation is attributed to
+    this prompt's name and version in Langfuse (see prompt-management ->
+    link-to-traces). It is a no-op offline, where there is no trace to
+    attribute it to.
+    """
+
+    def compile(self) -> str: ...
+
+    def link(self) -> AbstractContextManager[None]: ...
+
+
+class LiteralPrompt:
+    """The offline default, and what `Agent`/`agent_graph` fall back to when
+    no `prompt=` is given."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def compile(self) -> str:
+        return self._text
+
+    def link(self) -> AbstractContextManager[None]:
+        return nullcontext()
+
+
+class _LangfusePrompt:
+    """Wraps a `TextPromptClient`, fetched once per `LangfuseTracer` lifetime
+    (the SDK itself caches the underlying API call, `cache_ttl_seconds`)."""
+
+    def __init__(self, prompt: Any) -> None:
+        self._prompt = prompt
+
+    def compile(self) -> str:
+        # `_prompt` stays `Any` (see __init__): calling `str()` here, not just
+        # trusting the SDK's declared return type, is what makes this a `str`
+        # under mypy strict without importing `TextPromptClient` at module
+        # scope, which would pull `langfuse` into the offline import graph.
+        return str(self._prompt.compile())
+
+    def link(self) -> AbstractContextManager[None]:
+        from langfuse import propagate_attributes
+
+        # The recommended hook for auto-instrumented generations (here, the
+        # LangChain CallbackHandler via create_agent): we never construct the
+        # GENERATION observation ourselves, so there is no `prompt=` kwarg to
+        # pass directly — propagate_attributes attributes it to whichever
+        # generation the callback handler opens next.
+        return propagate_attributes(prompt=self._prompt)
 
 
 class Turn(Protocol):
@@ -67,7 +135,8 @@ class Turn(Protocol):
 
 
 class Tracer(Protocol):
-    """Backend that turns a conversational turn into an observation."""
+    """Backend that turns a conversational turn into an observation, and vends
+    the system prompt generations in that turn should be attributed to."""
 
     @property
     def records(self) -> bool:
@@ -75,6 +144,10 @@ class Tracer(Protocol):
         of building the metadata this backend would only discard."""
 
     def start_turn(self, user_id: str, message: str) -> Turn: ...
+
+    def get_prompt(self, name: str, *, fallback: str) -> SystemPrompt:
+        """The named prompt, Langfuse-managed in prod, `fallback` offline."""
+        ...
 
 
 class NoOpTurn:
@@ -97,6 +170,9 @@ class NoOpTracer:
 
     def start_turn(self, user_id: str, message: str) -> Turn:
         return NoOpTurn()
+
+    def get_prompt(self, name: str, *, fallback: str) -> SystemPrompt:
+        return LiteralPrompt(fallback)
 
 
 class LangfuseTurn:
@@ -178,6 +254,13 @@ class LangfuseTracer:
 
     def start_turn(self, user_id: str, message: str) -> Turn:
         return LangfuseTurn(self._client, self._public_key, user_id, message, self._version)
+
+    def get_prompt(self, name: str, *, fallback: str) -> SystemPrompt:
+        # label="production" is already the server-side default when no
+        # version/label is given, but the langfuse skill recommends passing
+        # it explicitly rather than relying on that default holding.
+        prompt = self._client.get_prompt(name, label="production", fallback=fallback)
+        return _LangfusePrompt(prompt)
 
 
 def _redact_attributes(attributes: Mapping[str, Any]) -> dict[str, str]:

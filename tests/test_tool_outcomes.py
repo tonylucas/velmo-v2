@@ -153,6 +153,11 @@ def test_llm_path_forbidden_order_does_not_inflate_agent_tool_errors() -> None:
         def start_turn(self, user_id: str, message: str) -> "Turn":
             return self.turn
 
+        def get_prompt(self, name: str, *, fallback: str):
+            from velmo.observability import LiteralPrompt
+
+            return LiteralPrompt(fallback)
+
     model = ScriptedToolCallingChatModel(
         responses=[
             AIMessage(

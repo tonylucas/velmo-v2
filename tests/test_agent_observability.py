@@ -12,7 +12,7 @@ from velmo.guardrails import GuardrailEngine
 from velmo.kb_store import LocalKB
 from velmo.llm import OfflineChatModel
 from velmo.memory.fact_store import LocalFactStore
-from velmo.observability import Turn
+from velmo.observability import LiteralPrompt, Turn
 
 
 class RecordingTurn:
@@ -55,11 +55,16 @@ class RecordingTracer:
 
     def __init__(self) -> None:
         self.turns: list[RecordingTurn] = []
+        self.prompt_calls: list[tuple[str, str]] = []
 
     def start_turn(self, user_id: str, message: str) -> Turn:
         turn = RecordingTurn(user_id, message)
         self.turns.append(turn)
         return turn
+
+    def get_prompt(self, name: str, *, fallback: str):
+        self.prompt_calls.append((name, fallback))
+        return LiteralPrompt(fallback)
 
 
 def test_a_normal_turn_is_opened_and_closed_once() -> None:
@@ -117,6 +122,28 @@ def test_a_plain_turn_reports_no_escalation_and_no_tool_error() -> None:
     metadata = tracer.turns[0].metadata
     assert metadata["escalated"] is False
     assert metadata["tool_errors"] == 0
+
+
+def test_agent_construction_fetches_the_system_prompt_once() -> None:
+    from velmo.observability import SYSTEM_PROMPT_FALLBACK, SYSTEM_PROMPT_NAME
+
+    tracer = RecordingTracer()
+    build_reference_agent(tracer=tracer)
+
+    assert tracer.prompt_calls == [(SYSTEM_PROMPT_NAME, SYSTEM_PROMPT_FALLBACK)]
+
+
+def test_agent_respond_reuses_the_same_prompt_across_turns() -> None:
+    # get_prompt is called once at construction (see Agent.__init__), not once
+    # per turn — the Langfuse-managed prompt should not be refetched on every
+    # respond() call.
+    tracer = RecordingTracer()
+    agent = build_reference_agent(tracer=tracer)
+
+    agent.respond("C-marc-dubois", "Où en est ma commande O-2024-0101 ?")
+    agent.respond("C-marc-dubois", "Bonjour")
+
+    assert len(tracer.prompt_calls) == 1
 
 
 def test_the_answer_is_identical_with_and_without_a_tracer() -> None:

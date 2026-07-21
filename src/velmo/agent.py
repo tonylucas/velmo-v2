@@ -20,7 +20,13 @@ from .memory.checkpointer import get_checkpointer
 from .memory.extract import Extractor, get_extractor
 from .memory.fact_store import get_fact_store
 from .memory.facts import Fact
-from .observability import Tracer, get_tracer
+from .observability import (
+    SYSTEM_PROMPT_FALLBACK,
+    SYSTEM_PROMPT_NAME,
+    SystemPrompt,
+    Tracer,
+    get_tracer,
+)
 from .turn_log import TurnLog
 
 logger = logging.getLogger(__name__)
@@ -67,6 +73,12 @@ class Agent:
         self.store = store if store is not None else get_fact_store()
         self.extractor: Extractor = extractor if extractor is not None else get_extractor()
         self.tracer: Tracer = tracer if tracer is not None else get_tracer()
+        # Fetched once per Agent lifetime, like the tracer above: the Langfuse
+        # SDK caches the underlying call, so there is nothing to gain from
+        # refetching per turn.
+        self.prompt: SystemPrompt = self.tracer.get_prompt(
+            SYSTEM_PROMPT_NAME, fallback=SYSTEM_PROMPT_FALLBACK
+        )
 
     def respond(self, user_id: str, message: str, *, turn_log: TurnLog | None = None) -> str:
         """Answer one turn. Pass a `turn_log` to record what ran (demo panel only);
@@ -115,6 +127,7 @@ class Agent:
                 store=self.store,
                 turn_log=turn_log,
                 traced_turn=turn,
+                prompt=self.prompt,
             )
 
             # Memory extraction enriches the next turn; it is not what the customer

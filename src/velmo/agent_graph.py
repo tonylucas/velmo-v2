@@ -8,6 +8,11 @@ Two nodes:
 Short-term memory is the checkpointer: compiled into the graph and keyed by
 thread_id, it holds the conversation history across turns. `answer` invokes the
 graph with only the new message; the runtime loads and persists the rest.
+
+`llm_node`'s system prompt comes from `prompt` (`velmo.observability.SystemPrompt`):
+Langfuse-managed in prod, `SYSTEM_PROMPT_FALLBACK` offline or when no `prompt`
+is passed — every existing caller that doesn't care about prompt management
+keeps working unchanged.
 """
 
 from __future__ import annotations
@@ -25,8 +30,14 @@ from langgraph.graph.message import add_messages
 
 from .agent_tools import build_tools
 from .llm import get_chat_model
-from .observability import MEMORY_RETRIEVAL_NAME, Turn
-from .routing import SYSTEM_PROMPT, run_deterministic
+from .observability import (
+    SYSTEM_PROMPT_FALLBACK,
+    LiteralPrompt,
+    MEMORY_RETRIEVAL_NAME,
+    SystemPrompt,
+    Turn,
+)
+from .routing import run_deterministic
 from .tools._common import classify_result
 from .turn_log import TurnLog
 
@@ -57,8 +68,11 @@ def build_graph(
     checkpointer: BaseCheckpointSaver | None = None,
     store=None,
     turn_log: TurnLog | None = None,
+    prompt: SystemPrompt | None = None,
 ):
     """Compile the two-node agent graph bound to one request."""
+    if prompt is None:
+        prompt = LiteralPrompt(SYSTEM_PROMPT_FALLBACK)
 
     def deterministic_node(state: AgentState) -> dict:
         message = state["messages"][-1].content
@@ -70,9 +84,8 @@ def build_graph(
     def route(state: AgentState) -> Literal["llm_node", "__end__"]:
         return END if state.get("matched") else "llm_node"
 
-    system_prompt = SYSTEM_PROMPT
-    if context:
-        system_prompt = f"{SYSTEM_PROMPT}\n\nMémoire:\n{context}"
+    base_prompt = prompt.compile()
+    system_prompt = f"{base_prompt}\n\nMémoire:\n{context}" if context else base_prompt
     react = create_agent(
         model=chat_model,
         tools=build_tools(session, user_id, kb, store),
@@ -83,8 +96,11 @@ def build_graph(
         windowed = window_messages(state["messages"])
         # One invoke on both paths; `timed` keeps the step even if the model
         # raises (Azure timeout), so the panel shows where the turn died.
+        # `prompt.link()` attributes the generations the callback handler
+        # opens inside this call to `prompt`'s Langfuse version; a no-op
+        # offline, where there is no trace to attribute it to.
         measure = turn_log.timed("graph", "llm_node") if turn_log is not None else nullcontext(None)
-        with measure as step:
+        with measure as step, prompt.link():
             result = react.invoke({"messages": windowed})
             if step is not None:
                 step.outcome = "done"
@@ -155,6 +171,7 @@ def answer(
     store=None,
     turn_log: TurnLog | None = None,
     traced_turn: Turn | None = None,
+    prompt: SystemPrompt | None = None,
 ) -> str:
     """Run one turn through the agent graph and return the final reply text."""
     if chat_model is None:
@@ -179,7 +196,9 @@ def answer(
         memory = render_facts(facts)
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
-    graph = build_graph(session, user_id, kb, chat_model, context, checkpointer, store, turn_log)
+    graph = build_graph(
+        session, user_id, kb, chat_model, context, checkpointer, store, turn_log, prompt
+    )
     # Both keys are optional and independent: a turn can have a checkpointer with
     # no callbacks (offline) or callbacks with no checkpointer (a bare graph).
     config: dict[str, Any] = {}

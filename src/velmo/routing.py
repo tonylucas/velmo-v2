@@ -18,11 +18,6 @@ from .tools._common import classify_result
 from .tools.memory_tools import forget_user_data, inspect_user_memory
 from .turn_log import TurnLog
 
-SYSTEM_PROMPT = (
-    "Tu es l'assistant de support de Velmo, boutique de maillots de foot collector. "
-    "Tu traites la gestion de commandes de niveau 1 avec courtoisie et précision."
-)
-
 ORDER_RE = re.compile(r"O-\d{4}-\d{4}")
 SIZE_RE = re.compile(r"\b(XXL|XL|S|M|L)\b")
 AMOUNT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:€|euros?)")
