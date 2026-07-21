@@ -33,6 +33,10 @@ class RecordingTurn:
         self.metadata: dict[str, Any] = {}
         self.end_calls = 0
         self._ended = False
+        self.retrievals: list[tuple[str, str, list[str]]] = []
+
+    def record_retrieval(self, name: str, query: str, documents: list[str]) -> None:
+        self.retrievals.append((name, query, documents))
 
     def end(self, *, answer: str, **metadata: Any) -> None:
         self.end_calls += 1
@@ -154,3 +158,41 @@ def test_a_turn_that_raises_mid_response_is_still_closed_exactly_once() -> None:
     assert turn.end_calls == 1
     assert turn.answer == "[unhandled error]"
     assert turn.metadata["error"] is True
+
+
+def test_a_turn_records_its_memory_retrieval() -> None:
+    from velmo.memory.fact_store import LocalFactStore
+    from velmo.memory.facts import Fact
+
+    store = LocalFactStore()
+    store.write(
+        Fact.new(user_id="C-marc-dubois", fact_type="preference", key="taille", content="fait du L")
+    )
+    tracer = RecordingTracer()
+    agent = build_reference_agent(store, tracer=tracer)
+
+    agent.respond("C-marc-dubois", "Quelle taille je prends ?")
+
+    name, query, documents = tracer.turns[0].retrievals[0]
+    assert name == "retrieve-memory"
+    assert query == "Quelle taille je prends ?"
+    assert "taille : fait du L" in documents
+
+
+def test_a_turn_with_no_stored_facts_still_records_an_empty_retrieval() -> None:
+    # Retrieving nothing is a diagnosis, not a reason to skip the observation.
+    tracer = RecordingTracer()
+
+    build_reference_agent(tracer=tracer).respond("C-inconnu-du-store", "Bonjour")
+
+    assert tracer.turns[0].retrievals[0][2] == []
+
+
+def test_exactly_one_retrieval_is_recorded_per_turn() -> None:
+    tracer = RecordingTracer()
+
+    build_reference_agent(tracer=tracer).respond(
+        "C-marc-dubois", "Où en est ma commande O-2024-0101 ?"
+    )
+
+    assert len(tracer.turns[0].retrievals) == 1

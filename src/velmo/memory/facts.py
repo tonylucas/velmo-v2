@@ -51,6 +51,31 @@ class Fact(BaseModel):
         )
 
 
+def _fact_lines(facts: list[Fact]) -> list[str]:
+    """One line per fact, `key : content`, with `content` untouched.
+
+    The shared builder behind both `render_facts` and `retrieved_documents`, so
+    the two can never drift apart. Splitting on `content`'s own newlines (as
+    `str.splitlines()` over the joined text used to) would silently turn one
+    fact into several documents and drop whichever separator triggered the
+    split — wrong for a judge that is supposed to see exactly what the model
+    saw, character for character.
+    """
+    return [f"{f.key} : {f.content}" for f in facts]
+
+
 def render_facts(facts: list[Fact]) -> str:
     """Render facts as a compact bullet list for injection into the LLM prompt."""
-    return "\n".join(f"- {f.key} : {f.content}" for f in facts)
+    return "\n".join(f"- {line}" for line in _fact_lines(facts))
+
+
+def retrieved_documents(facts: list[Fact]) -> list[str]:
+    """The injected memory lines, one per fact, without the markdown bullet.
+
+    Built from the same line-per-fact list as `render_facts` (one document per
+    fact, always — a multi-line `content` stays a single document), so the
+    context a judge scores can never drift from the context the model was
+    given. The bullet is prompt presentation, not content: keeping it would put
+    an artefact in every document that an evaluator has to learn to ignore.
+    """
+    return _fact_lines(facts)

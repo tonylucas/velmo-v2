@@ -109,7 +109,7 @@ class Agent:
                 thread_id=user_id,
                 store=self.store,
                 turn_log=turn_log,
-                callbacks=turn.callbacks,
+                traced_turn=turn,
             )
 
             facts = list(self.extractor.extract(user_id, [HumanMessage(content=safe_message)]))
