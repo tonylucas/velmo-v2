@@ -19,3 +19,17 @@ def test_default_port_when_missing():
 def test_reads_env_when_no_arg(monkeypatch):
     monkeypatch.setenv("CHROMA_URL", "http://envhost:9000")
     assert parse_chroma_url() == ("envhost", 9000)
+
+
+def test_missing_env_raises_a_readable_error(monkeypatch):
+    # The two backends guard on CHROMA_URL before calling this and fall back to
+    # their offline variant, so the only unguarded caller is scripts/seed_kb.py —
+    # which genuinely needs a Chroma service. It used to die on a bare KeyError.
+    # Defaulting to localhost:8000 would be worse: .env.example uses 8001, so the
+    # script would connect to the wrong port and fail with a confusing timeout.
+    import pytest
+
+    monkeypatch.delenv("CHROMA_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match="CHROMA_URL is not set"):
+        parse_chroma_url()

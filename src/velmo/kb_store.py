@@ -18,10 +18,27 @@ KB_DOCS_DIR = Path(__file__).resolve().parents[2] / "kb" / "docs"
 def parse_chroma_url(url: str | None = None) -> tuple[str, int]:
     """Parse CHROMA_URL (or the given url) into (host, port).
 
-    Defaults to localhost:8000. Single source of truth for the three call sites
-    (kb_store, fact_store, seed_kb) so they cannot drift apart.
+    Single source of truth for the three call sites (kb_store, fact_store,
+    seed_kb) so they cannot drift apart.
+
+    Raises `RuntimeError` when neither a url nor CHROMA_URL is given. It does
+    *not* fall back to a default host: `get_kb` and `get_fact_store` already
+    check the variable and pick their offline backend when it is missing, so
+    the only caller that reaches this unguarded is `scripts/seed_kb.py`, which
+    genuinely requires a Chroma service. Guessing localhost:8000 there would
+    connect to the wrong place and fail with a confusing connection error —
+    `.env.example` itself uses port 8001.
+
+    The `or` defaults below fill in a *partial* url (e.g. "http://chroma"),
+    which is a different case from the variable being absent entirely.
     """
-    parsed = urlparse(url or os.environ["CHROMA_URL"])
+    resolved = url or os.getenv("CHROMA_URL")
+    if not resolved:
+        raise RuntimeError(
+            "CHROMA_URL is not set. Point it at your Chroma service "
+            "(see .env.example), or run the offline stack which needs no Chroma."
+        )
+    parsed = urlparse(resolved)
     return parsed.hostname or "localhost", parsed.port or 8000
 
 

@@ -17,8 +17,14 @@ def main() -> None:
 
     import chromadb
     from chromadb.utils import embedding_functions
+    from dotenv import load_dotenv
 
     from velmo.kb_store import parse_chroma_url
+
+    # Same first line as the other entrypoints (cli.py, demo_app.py): without it
+    # the script ignores the CHROMA_URL sitting in the developer's .env and dies
+    # on a bare KeyError.
+    load_dotenv()
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
