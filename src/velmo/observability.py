@@ -30,11 +30,33 @@ DEFAULT_HOST = "https://cloud.langfuse.com"
 # silently breaks them and a name carrying an id explodes their cardinality.
 TURN_SPAN_NAME = "handle-turn"
 
+# The memory RAG step, named by the action it performs. Same low-cardinality rule
+# as TURN_SPAN_NAME: an evaluator or a saved view that matches on this name breaks
+# silently if it changes, so it is pinned by a test.
+MEMORY_RETRIEVAL_NAME = "retrieve-memory"
+
 
 class Turn(Protocol):
     """One traced turn, opened by `Tracer.start_turn` and closed by `end`."""
 
     callbacks: list[Any]
+
+    def record_retrieval(self, name: str, query: str, documents: list[str]) -> None:
+        """Record one RAG retrieval as a child observation of this turn.
+
+        `documents` is the retrieved context exactly as the model received it, so
+        an evaluator scoring faithfulness judges what the model actually saw. An
+        empty list is still worth recording so the sampling stays consistent —
+        but it is not a diagnosis of an off-topic answer: it is the normal state
+        of any user with no durable facts stored yet, including one whose turn
+        is fully and correctly grounded in the FAQ instead. Callers scoring
+        faithfulness must treat an empty context as not-applicable, not as zero.
+
+        Must be called before `end()`: the observation nests under the turn's
+        span, and `end` closes that span (along with the rest of the turn's
+        `ExitStack`) — a call made afterward would attach to whatever context
+        happens to be current instead, not to this turn."""
+        ...
 
     def end(self, *, answer: str, **metadata: Any) -> None:
         """Close the turn. Must be idempotent: `Agent.respond` wraps the traced
@@ -60,6 +82,9 @@ class NoOpTurn:
 
     def __init__(self) -> None:
         self.callbacks: list[Any] = []
+
+    def record_retrieval(self, name: str, query: str, documents: list[str]) -> None:
+        return None
 
     def end(self, *, answer: str, **metadata: Any) -> None:
         return None
@@ -110,6 +135,16 @@ class LangfuseTurn:
         # get_client(public_key=...), so naming the key pins it to the client we
         # built — the one carrying the masking hook.
         self.callbacks: list[Any] = [CallbackHandler(public_key=public_key)]
+
+    def record_retrieval(self, name: str, query: str, documents: list[str]) -> None:
+        # as_type="retriever" is not decoration: evaluators and dashboards filter
+        # on observation type, so a retrieval typed as a plain span is invisible
+        # to them. The observation nests under the turn's span automatically —
+        # __init__ already entered start_as_current_observation.
+        observation = self._client.start_observation(
+            name=name, as_type="retriever", input=query, output=documents
+        )
+        observation.end()
 
     def end(self, *, answer: str, **metadata: Any) -> None:
         # Idempotent: a second call (e.g. the `finally` guard in Agent.respond
