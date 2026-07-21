@@ -135,6 +135,9 @@ def test_llm_path_forbidden_order_does_not_inflate_agent_tool_errors() -> None:
             self.metadata: dict = {}
             self._ended = False
 
+        def record_retrieval(self, name: str, query: str, documents: list) -> None:
+            return None
+
         def end(self, *, answer: str, **metadata) -> None:
             if self._ended:
                 return

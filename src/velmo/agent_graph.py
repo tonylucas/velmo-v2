@@ -25,6 +25,7 @@ from langgraph.graph.message import add_messages
 
 from .agent_tools import build_tools
 from .llm import get_chat_model
+from .observability import MEMORY_RETRIEVAL_NAME, Turn
 from .routing import SYSTEM_PROMPT, run_deterministic
 from .tools._common import classify_result
 from .turn_log import TurnLog
@@ -153,13 +154,13 @@ def answer(
     thread_id: str | None = None,
     store=None,
     turn_log: TurnLog | None = None,
-    callbacks: list[Any] | None = None,
+    traced_turn: Turn | None = None,
 ) -> str:
     """Run one turn through the agent graph and return the final reply text."""
     if chat_model is None:
         chat_model = get_chat_model()
     if store is not None:
-        from .memory.facts import render_facts
+        from .memory.facts import render_facts, retrieved_documents
 
         facts = select_memory(store, user_id, message)
         if turn_log is not None:
@@ -170,6 +171,11 @@ def answer(
                 count=len(facts),
                 keys=[f.key for f in facts],
             )
+        if traced_turn is not None:
+            # Recorded here rather than in respond(): this is where the retrieval
+            # actually happens, and where the facts still exist as objects instead
+            # of a flattened prompt string.
+            traced_turn.record_retrieval(MEMORY_RETRIEVAL_NAME, message, retrieved_documents(facts))
         memory = render_facts(facts)
         if memory:
             context = f"{memory}\n{context}".rstrip() if context else memory
@@ -179,6 +185,7 @@ def answer(
     config: dict[str, Any] = {}
     if checkpointer is not None:
         config["configurable"] = {"thread_id": thread_id}
+    callbacks = traced_turn.callbacks if traced_turn is not None else None
     if callbacks:
         config["callbacks"] = callbacks
     result = graph.invoke(
