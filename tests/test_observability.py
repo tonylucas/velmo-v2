@@ -37,6 +37,20 @@ def test_a_noop_turn_offers_no_callbacks_and_swallows_end() -> None:
     assert turn.end(answer="salut", escalated=True) is None
 
 
+def test_the_noop_tracer_vends_the_literal_fallback_as_the_prompt() -> None:
+    # Offline: no client, no network — the fallback text stands in unchanged.
+    prompt = NoOpTracer().get_prompt("velmo-support-system", fallback="Bonjour, ceci est un test.")
+
+    assert prompt.compile() == "Bonjour, ceci est un test."
+
+
+def test_a_literal_prompts_link_is_a_working_no_op_context_manager() -> None:
+    from velmo.observability import LiteralPrompt
+
+    with LiteralPrompt("texte").link():
+        pass  # must not raise, and must not require any Langfuse context
+
+
 def test_importing_the_module_does_not_import_langfuse() -> None:
     # The import must stay lazy: the core installs without the `obs` extra, and
     # the offline path must not pay for a heavy OpenTelemetry import.
@@ -247,3 +261,43 @@ def test_the_memory_retrieval_span_name_is_stable() -> None:
     # value here makes an accidental rename a test failure rather than a silent
     # gap in someone's dashboard.
     assert observability.MEMORY_RETRIEVAL_NAME == "retrieve-memory"
+
+
+def test_langfuse_tracer_get_prompt_fetches_the_production_label_with_a_fallback() -> None:
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    client.get_prompt.return_value.compile.return_value = "Texte géré par Langfuse."
+    tracer = observability.LangfuseTracer(client, "pk-lf-test", "v1")
+
+    prompt = tracer.get_prompt("velmo-support-system", fallback="texte de secours")
+
+    client.get_prompt.assert_called_once_with(
+        "velmo-support-system", label="production", fallback="texte de secours"
+    )
+    assert prompt.compile() == "Texte géré par Langfuse."
+
+
+def test_langfuse_prompt_link_propagates_the_fetched_prompt(monkeypatch) -> None:
+    # This is the hook that attributes the CallbackHandler's generations to a
+    # Langfuse prompt version: we never open the GENERATION observation
+    # ourselves (create_agent/LangGraph does), so propagate_attributes is the
+    # documented way to link a prompt to auto-instrumented generations.
+    import sys
+    from types import ModuleType
+    from unittest.mock import MagicMock
+
+    fake_langfuse = ModuleType("langfuse")
+    propagate_attributes = MagicMock(return_value=MagicMock())
+    fake_langfuse.propagate_attributes = propagate_attributes  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "langfuse", fake_langfuse)
+
+    client = MagicMock()
+    fetched_prompt = client.get_prompt.return_value
+    tracer = observability.LangfuseTracer(client, "pk-lf-test", "v1")
+    prompt = tracer.get_prompt("velmo-support-system", fallback="texte de secours")
+
+    with prompt.link():
+        pass
+
+    propagate_attributes.assert_called_once_with(prompt=fetched_prompt)

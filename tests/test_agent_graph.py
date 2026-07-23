@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from conftest import ScriptedToolCallingChatModel, seeded_session
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -10,7 +12,22 @@ from velmo import agent_graph
 from velmo.agent_graph import answer, build_graph, get_state, select_memory, window_messages
 from velmo.llm import OfflineChatModel
 from velmo.memory.fact_store import LocalFactStore
+from velmo.observability import SYSTEM_PROMPT_FALLBACK, LiteralPrompt
 from velmo.tools.memory_tools import remember_fact
+
+
+def _capturing_model(responses: list) -> tuple:
+    """A scripted model plus the SystemMessage content seen on each call —
+    what the LLM was actually sent, not what the graph intended to send."""
+    seen: list[str] = []
+
+    class Recorder(ScriptedToolCallingChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            system = next(m for m in messages if isinstance(m, SystemMessage))
+            seen.append(system.content)
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    return Recorder(responses=responses), seen
 
 
 def test_deterministic_path_never_calls_llm():
@@ -162,8 +179,12 @@ def test_answer_runs_with_store_wired():
     store = LocalFactStore()
     remember_fact(store, "u1", "profile", "pointure", "L")
     reply = agent_graph.answer(
-        None, "u1", None, "Bonjour",
-        chat_model=OfflineChatModel(), store=store,
+        None,
+        "u1",
+        None,
+        "Bonjour",
+        chat_model=OfflineChatModel(),
+        store=store,
     )
     assert isinstance(reply, str) and reply
 
@@ -185,3 +206,76 @@ def test_select_memory_keeps_semantic_facts_despite_episodic_volume():
     keys = {f.key for f in select_memory(store, user, "peu importe")}
     assert "tutoiement" in keys
     assert "pointure" in keys
+
+
+def test_system_prompt_is_compiled_from_the_given_prompt_object():
+    session = seeded_session()
+    model, seen = _capturing_model([AIMessage(content="ok")])
+
+    answer(
+        session,
+        "C-marc-dubois",
+        None,
+        "Bonjour",
+        chat_model=model,
+        prompt=LiteralPrompt("PROMPT_MARKER_XYZ"),
+    )
+
+    assert seen == ["PROMPT_MARKER_XYZ"]
+
+
+def test_system_prompt_falls_back_to_the_literal_text_when_none_is_given():
+    # Every existing call site that predates prompt management (most of this
+    # file) calls answer()/build_graph() without `prompt=`; behaviour for them
+    # must be unchanged.
+    session = seeded_session()
+    model, seen = _capturing_model([AIMessage(content="ok")])
+
+    answer(session, "C-marc-dubois", None, "Bonjour", chat_model=model)
+
+    assert seen == [SYSTEM_PROMPT_FALLBACK]
+
+
+def test_system_prompt_keeps_the_memoire_block_appended_after_it():
+    session = seeded_session()
+    model, seen = _capturing_model([AIMessage(content="ok")])
+
+    answer(
+        session,
+        "C-marc-dubois",
+        None,
+        "Bonjour",
+        chat_model=model,
+        prompt=LiteralPrompt("BASE"),
+        context="- order : O-2024-0101",
+    )
+
+    assert seen == ["BASE\n\nMémoire:\n- order : O-2024-0101"]
+
+
+def test_llm_node_wraps_the_invoke_call_in_the_prompt_link():
+    # `prompt.link()` is what attributes the LLM call to a Langfuse prompt
+    # version (see velmo.observability._LangfusePrompt). It must wrap the
+    # actual `react.invoke()` call, not just run alongside it.
+    session = seeded_session()
+    calls: list[str] = []
+
+    class SpyPrompt:
+        def compile(self) -> str:
+            return "BASE"
+
+        def link(self):
+            @contextmanager
+            def _cm():
+                calls.append("enter")
+                yield
+                calls.append("exit")
+
+            return _cm()
+
+    model = ScriptedToolCallingChatModel(responses=[AIMessage(content="ok")])
+    graph = build_graph(session, "C-marc-dubois", None, model, prompt=SpyPrompt())
+
+    graph.invoke({"messages": [HumanMessage(content="Bonjour")], "matched": False})
+
+    assert calls == ["enter", "exit"]
