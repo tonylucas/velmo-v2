@@ -50,7 +50,10 @@ jobs:
       # Two tags on purpose — the immutable one is what a rollback checks out, and
       # `latest` is what the Web App pulls on restart.
       - name: Build the image in ACR
-        run: az acr build --registry "$ACR" --image "velmo:$TAG" --image velmo:latest .
+        run: |
+          az acr build --registry "$ACR" \
+            --image "velmo:$TAG" --image velmo:latest \
+            --build-arg "VELMO_VERSION=$TAG" .
 
       - name: Roll the Web App onto the new image
         run: az webapp restart -g "$RG" -n "$APP"
