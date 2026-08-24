@@ -5,6 +5,14 @@
 # on that tag, so a failed eval gate blocks the production rollout. `workflow_run`
 # gives no tag ref of its own — `head_branch` carries the tag name that triggered
 # `release`, and checkout must use it explicitly (the default ref is main).
+#
+# Authentication is OIDC (federated credentials): GitHub mints a short-lived token
+# per run, so no Azure credential is ever stored in the repository. `id-token: write`
+# is what allows that token to be requested — without it azure/login fails.
+#
+# A workflow_run job always runs in the context of the default branch, so the
+# federated credential on the app registration must carry the subject
+# `repo:<owner>/<repo>:ref:refs/heads/main` — not a tag pattern.
 name: deploy
 
 on:
@@ -14,23 +22,43 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     env:
-      ACR: ${{ secrets.ACR_NAME }}
+      ACR: ${{ vars.ACR_NAME }}
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      APP: ${{ vars.AZURE_WEBAPP_NAME }}
       TAG: ${{ github.event.workflow_run.head_branch }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_branch }}
-      - name: Azure login
+
+      - name: Azure login (OIDC, no stored secret)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-      - name: Build and push image to ACR
-        run: az acr build --registry "$ACR" --image "velmo:$TAG" .
-      - name: Roll a new Container App revision
-        run: az containerapp update -g tlucasRG -n velmo2-tony --image "$ACR.azurecr.io/velmo:$TAG"
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Built by ACR itself, not by the runner: the image bakes the embedding model
+      # and is far cheaper to build next to the registry than to push from GitHub.
+      # Two tags on purpose — the immutable one is what a rollback checks out, and
+      # `latest` is what the Web App pulls on restart.
+      - name: Build the image in ACR
+        run: |
+          az acr build --registry "$ACR" \
+            --image "velmo:$TAG" --image velmo:latest \
+            --build-arg "VELMO_VERSION=$TAG" .
+
+      - name: Roll the Web App onto the new image
+        run: az webapp restart -g "$RG" -n "$APP"
+
+      - name: Report the deployed URL
+        run: |
+          url=$(az webapp show -g "$RG" -n "$APP" --query defaultHostName -o tsv)
+          echo "Deployed $TAG to https://$url" >> "$GITHUB_STEP_SUMMARY"

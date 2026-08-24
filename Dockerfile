@@ -28,5 +28,12 @@ RUN uv run python -c "from sentence_transformers import SentenceTransformer; Sen
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1
 
+# Stamp the released version into the image. The build context carries no `.git`,
+# so `git describe` cannot answer at runtime; this is what lets the running
+# container report which release it actually is. Declared last so changing it
+# never invalidates the expensive layers above.
+ARG VELMO_VERSION=dev
+ENV VELMO_VERSION=${VELMO_VERSION}
+
 EXPOSE 8000
 ENTRYPOINT ["bash", "scripts/serve.sh"]

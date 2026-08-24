@@ -31,6 +31,7 @@ from sqlalchemy import select
 from velmo.agent import Agent, build_default_agent
 from velmo.db import Customer
 from velmo.guardrails import Decision
+from velmo.mlops.version import current_version
 from velmo.turn_log import TurnLog
 from velmo.turn_log_view import format_detail, grouped_steps, outcome_badge, stage_label, turn_title
 
@@ -244,6 +245,10 @@ def main() -> None:
     with st.sidebar:
         st.title("⚽ Velmo 2.0")
         st.caption("Démo prod — chat, garde-fous, mémoire long terme")
+        # Which release is actually serving this page. Stamped into the image at
+        # build time, so it identifies the deployed artefact rather than the
+        # checkout the code happens to come from.
+        st.caption(f"Version déployée : `{current_version()}`")
         user_id = st.selectbox(
             "Client authentifié",
             options=list(customers),
