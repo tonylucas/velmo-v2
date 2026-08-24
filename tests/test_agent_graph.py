@@ -147,6 +147,36 @@ def test_window_messages_shorter_than_limit_unchanged():
     assert window_messages(msgs, 30) == msgs
 
 
+def test_window_never_opens_on_an_orphan_tool_result():
+    # The cut falls right after the AIMessage that requested the tool, leaving its
+    # replies at the head of the window. Sending those is a 400 from the provider:
+    # a tool result must follow the tool_calls that asked for it.
+    history = [
+        HumanMessage(content="Ma commande O-2024-0101 ?"),
+        AIMessage(content="", tool_calls=[{"name": "get_order", "args": {}, "id": "c1"}]),
+        ToolMessage(content="{}", tool_call_id="c1"),
+        AIMessage(content="Voici votre commande."),
+        HumanMessage(content="Merci"),
+    ]
+
+    windowed = window_messages(history, 3)
+
+    assert not isinstance(windowed[0], ToolMessage)
+    assert [m.content for m in windowed] == ["Voici votre commande.", "Merci"]
+
+
+def test_window_keeps_a_tool_result_that_still_has_its_request():
+    # Nothing to repair when the pair survives the cut: dropping the reply would
+    # lose the tool output the model needs to answer.
+    history = [
+        HumanMessage(content="Ma commande O-2024-0101 ?"),
+        AIMessage(content="", tool_calls=[{"name": "get_order", "args": {}, "id": "c1"}]),
+        ToolMessage(content='{"status": "paid"}', tool_call_id="c1"),
+    ]
+
+    assert window_messages(history, 3) == history
+
+
 def test_llm_input_is_windowed_but_state_keeps_all():
     session = seeded_session()
     ck = InMemorySaver()

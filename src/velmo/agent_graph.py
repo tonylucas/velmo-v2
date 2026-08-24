@@ -55,8 +55,18 @@ def window_messages(messages: list[BaseMessage], limit: int = WINDOW_SIZE) -> li
 
     The persisted state is never trimmed (soft window): the checkpointer keeps
     the full history; only the model's working context is bounded here.
+
+    The cut can land between an ``AIMessage`` carrying ``tool_calls`` and the
+    ``ToolMessage`` answering it. Providers reject a conversation that opens on a
+    tool result with no request to match it (OpenAI: "messages with role 'tool'
+    must be a response to a preceeding message with 'tool_calls'"), so those
+    orphaned replies are dropped rather than sent.
     """
-    return messages[-limit:]
+    windowed = messages[-limit:]
+    orphans = 0
+    while orphans < len(windowed) and isinstance(windowed[orphans], ToolMessage):
+        orphans += 1
+    return windowed[orphans:]
 
 
 def build_graph(
