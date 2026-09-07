@@ -6,7 +6,7 @@ L'agent actuel a été rapiécé une fois de trop : mémoire fragile, garde-fous
 
 ## Stack imposée
 
-- **LLM via API** : Azure AI Inference, modèle Kimi-K2.6. Aucun modèle local.
+- **LLM via API** : Azure AI Inference, modèle gpt-5.6-terra. Aucun modèle local.
 - **Mémoire long terme épisodique** : base vectorielle (Chroma) pour retrouver les souvenirs pertinents par similarité.
 - **Intégration continue** : GitHub Actions, avec blocage de livraison sous seuil de qualité.
 

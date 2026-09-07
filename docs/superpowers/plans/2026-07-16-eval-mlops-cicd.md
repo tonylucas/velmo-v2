@@ -15,7 +15,7 @@
 - Verification tooling available: `pytest`, `ruff`, `mypy`, `docker`, `python -c "import yaml"`. **Not** available: `shellcheck`, `hadolint`, `actionlint` — verify shell with `bash -n`, YAML with `yaml.safe_load`.
 - Exact Azure names (verbatim): RG `<resource-group>`, ACA env `<containerapp-env>`, region `swedencentral`, app `<app-name>`, Postgres app `<app-name>-pg`, Chroma app `<app-name>-chroma`, storage `<storage-account>`, file share `chromadata`, env storage name `chromastore`.
 - Env var contract (from `.env.example`): `DB_URL` (`postgresql+psycopg://…`), `CHROMA_URL` (`http://host:port`), `AZURE_AI_INFERENCE_ENDPOINT/_API_KEY/_MODEL`, `AZURE_CONTENT_SAFETY_ENDPOINT/_KEY`, `EVAL_MIN_SCORE` (default `0.8`), `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`.
-- Content Safety resource already exists (`eagwu-0283-resource`) — reuse the `.env` endpoint/key, never create one.
+- Content Safety resource already exists (`<ai-foundry-resource>`) — reuse the `.env` endpoint/key, never create one.
 - Embedding model `intfloat/multilingual-e5-small` is **baked into the image at build** (needs HuggingFace reachable during build only); runtime is offline (`HF_HUB_OFFLINE=1`).
 - The gate command is `python -m velmo.mlops.score --min-score <n>` (delivered in 005a).
 

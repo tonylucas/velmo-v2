@@ -1,7 +1,7 @@
 """Streamlit demo UI for the Velmo 2.0 support agent — wired to the production stack.
 
 This is not an offline demo: it drives the real ``build_default_agent()`` —
-PostgreSQL business data, the Azure (Kimi) chat model, the Chroma ``velmo_memory``
+PostgreSQL business data, the Azure (gpt-5.6-terra) chat model, the Chroma ``velmo_memory``
 long-term memory and ``velmo_faq`` FAQ, and the Postgres short-term checkpointer.
 The "durable facts" tab therefore shows exactly what lives in the Chroma
 ``velmo_memory`` collection for the selected customer.
@@ -101,7 +101,7 @@ def backend_summary() -> list[str]:
     return [
         f":material/database: Postgres — `{db}`",
         f":material/hub: Chroma — `{os.getenv('CHROMA_URL', '—')}` (`velmo_memory`, `velmo_faq`)",
-        f":material/smart_toy: LLM — `{os.getenv('AZURE_AI_INFERENCE_MODEL', 'Kimi-K2.6')}` "
+        f":material/smart_toy: LLM — `{os.getenv('AZURE_AI_INFERENCE_MODEL', 'gpt-5.6-terra')}` "
         "(Azure AI Inference)",
     ]
 

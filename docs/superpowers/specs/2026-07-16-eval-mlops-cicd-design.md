@@ -83,7 +83,7 @@ sont disponibles. Topologie effective :
 | **App** `<app-name>` | démo Streamlit | Container App, ingress **externe** :8000 | stateless |
 | **Postgres** `<app-name>-pg` | catalogue/clients/commandes | Container App `postgres:16-alpine`, ingress **interne** TCP :5432 | **éphémère → re-seed au démarrage** (données déterministes, rien de perdu) |
 | **Chroma** `<app-name>-chroma` | `velmo_memory` + `velmo_faq` | Container App `chromadb/chroma:0.5.23`, ingress **interne** TCP :8000, 1 réplica | **éphémère** (persistent au sein d'une session via `minReplicas=1` ; volume Azure Files **branchable via le portail** plus tard, cf. §7) |
-| **Content Safety** (existante) | garde-fous prod (modération entrée) | ressource Azure AI **déjà provisionnée** (`eagwu-0283-resource`, partagée avec Kimi) — **réutilisée** | — |
+| **Content Safety** (existante) | garde-fous prod (modération entrée) | ressource Azure AI **déjà provisionnée** (`<ai-foundry-resource>`, partagée avec Kimi) — **réutilisée** | — |
 | **Storage** `<storage-account>` | file share `chromadata` | Storage Account (LRS) | créé, **non branché** (volume Chroma optionnel via portail) |
 
 Tout dans le RG `<resource-group>`, l'environnement ACA `<containerapp-env>`, région `swedencentral`.
@@ -91,7 +91,7 @@ Networking interne ACA : l'app joint Postgres et Chroma par le DNS interne de
 l'environnement (`<app>.internal.<defaultDomain>`), jamais exposés publiquement.
 
 **Content Safety** : **rien à créer** — l'utilisateur dispose déjà d'une ressource Azure AI
-(`eagwu-0283-resource`, celle qui sert aussi Kimi) avec son endpoint et sa clé dans `.env`
+(`<ai-foundry-resource>`, celle qui sert aussi Kimi) avec son endpoint et sa clé dans `.env`
 (`AZURE_CONTENT_SAFETY_ENDPOINT` / `AZURE_CONTENT_SAFETY_KEY`). On les **réutilise** tels quels
 (secrets GitHub + env de l'app). Le moteur reste **résilient** : si ces variables sont absentes,
 les garde-fous se rabattent sur la détection déterministe locale (déjà géré par
@@ -115,7 +115,7 @@ flowchart TB
         end
     end
 
-    AI["Azure AI — ressource existante (eagwu-0283)<br/>Kimi-K2.6 (LLM) + Content Safety"]
+    AI["Azure AI — ressource existante (<ai-foundry-resource>)<br/>Kimi-K2.6 (LLM) + Content Safety"]
 
     App -->|"DB_URL<br/>...pg.internal...:5432"| PG
     App -->|"CHROMA_URL<br/>...chroma.internal...:8000"| Chroma
@@ -222,7 +222,7 @@ az containerapp create -g $RG -n <app-name>-pg --environment $ENV \
 az containerapp create -g $RG -n <app-name>-chroma --environment $ENV --yaml chroma-app.yaml
 
 # === 4. Content Safety : RIEN À FAIRE ===
-# Tu as déjà une ressource Azure AI (eagwu-0283-resource, celle de Kimi) avec son
+# Tu as déjà une ressource Azure AI (<ai-foundry-resource>, celle de Kimi) avec son
 # endpoint + sa clé dans ton .env (AZURE_CONTENT_SAFETY_ENDPOINT / _KEY). On les
 # réutilisera directement — aucune ressource à créer ici.
 
@@ -230,7 +230,7 @@ az containerapp create -g $RG -n <app-name>-chroma --environment $ENV --yaml chr
 # Crée un service principal (une identité machine) avec le droit de modifier les
 # ressources du groupe. Le JSON renvoyé (--sdk-auth) se colle dans un secret GitHub
 # nommé AZURE_CREDENTIALS : c'est ce qui autorise la CI à déployer sans ton mot de passe.
-az ad sp create-for-rbac --name velmo2-deployer --role contributor \
+az ad sp create-for-rbac --name <deployer-app-registration> --role contributor \
   --scopes /subscriptions/<sub>/resourceGroups/$RG --sdk-auth   # -> AZURE_CREDENTIALS
 ```
 

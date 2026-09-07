@@ -1,83 +1,96 @@
-# Déploiement Velmo sur Azure Container Apps
+# Déploiement Velmo sur Azure
 
-Runbook opérationnel du chantier 005b. Trois parties : provisionner l'infra (une fois),
-déployer l'app, et le rollback. Le **cœur CI** (gate d'éval + release) est indépendant
+Runbook opérationnel. La conception (choix de services, secrets, plan mémoire, schéma
+cible) est dans [`docs/dossier-deploiement-azure.md`](../docs/dossier-deploiement-azure.md) — ce fichier
+ne couvre que l'exploitation. Le **cœur CI** (gate d'éval + release) est indépendant
 d'Azure et fonctionne sans rien de ce qui suit.
 
-> **Les noms de ressources sont des placeholders.** `<resource-group>`,
-> `<containerapp-env>`, `<app-name>` et `<storage-account>` remplacent les
-> identifiants réels de l'abonnement, qui n'ont pas leur place dans un dépôt
-> public. Les régions, versions d'image et dimensionnements, eux, sont ceux
-> réellement utilisés. `infra/provision.sh` lit ces noms depuis l'environnement
-> (`RG=… APP=… bash infra/provision.sh`).
+> **Les noms de ressources sont des placeholders.** `<resource-group>`, `<app-name>`,
+> `<pg-server>`, `<storage-account>`, `<acr-name>` remplacent les identifiants réels de
+> l'abonnement, qui n'ont pas leur place dans un dépôt public. Les régions, versions
+> d'image, dimensionnements et noms de variables, eux, sont ceux réellement utilisés.
 
-## Phase 0 — provisionner l'infra (une fois)
+## La topologie en une phrase
 
-Prérequis créés à la main dans le portail : la Container App `<app-name>` (2 Gio), son
-environnement `<containerapp-env>`, le compte de stockage `<storage-account>` — le tout dans le
-resource group `<resource-group>`, région `swedencentral`.
+**Une seule App Service** (Web App for Containers, Linux, plan B1) qui fait tourner **deux
+conteneurs** : le conteneur principal Velmo (notre image, construite dans l'ACR, Streamlit
+sur le port 8000) et un **conteneur secondaire Chroma** (image officielle
+`chromadb/chroma:0.5.23`, joint en `http://localhost:8001`) dont le dossier de données est
+monté sur **Azure Files** — c'est ce volume qui rend la mémoire long terme persistante et
+partagée entre postes. Le reste est managé : **PostgreSQL Flexible Server** pour les données
+métier et la mémoire court terme, **Azure AI Foundry** (`gpt-5.6-terra`) pour le LLM,
+**Azure AI Content Safety** pour les garde-fous prod.
 
-Ensuite, dans **Azure Cloud Shell** (ou en local après `az login`), édite le mot de passe
-Postgres en haut de [`infra/provision.sh`](provision.sh) puis lance :
+## Provisionnement
 
-```bash
-bash infra/provision.sh
-```
+Les ressources ont été créées **au portail** (groupe de ressources unique, région Sweden
+Central) : App Service Plan + Web App, Flexible Server, Storage Account + partage Azure
+Files, ACR. Le détail ressource par ressource, avec les justifications de choix, est dans
+[`docs/dossier-deploiement-azure.md`](../docs/dossier-deploiement-azure.md) §1 et §5.
 
-Le script crée le partage Azure Files, la Container App **Postgres** (éphémère, interne) et
-la Container App **Chroma** (éphémère, interne), puis affiche les valeurs `DB_URL` et
-`CHROMA_URL` à réutiliser au déploiement.
+Le sidecar Chroma se déclare sur la Web App (*Deployment Center → Containers*) avec l'image
+`chromadb/chroma:0.5.23`, le port 8001, et le partage Azure Files monté sur
+`/chroma/chroma`. Sans ce montage, les faits durables repartent de zéro à chaque
+redémarrage — c'est précisément le défaut que le déploiement corrige.
 
-> **Déploiement manuel sur cet abonnement.** Le compte de formation interdit l'attribution
-> de rôles → pas de service principal → **pas de déploiement automatique par la CI**. Le
-> fichier [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) reste livré pour
-> un abonnement non bridé, mais ici on déploie à la main (ci-dessous).
+## Configuration
 
-## Déploiement (manuel)
+Tout passe par les **paramètres d'application** de la Web App (chiffrés au repos, injectés
+en variables d'environnement au démarrage) — jamais dans le dépôt. La liste exhaustive,
+secrets et configuration séparés, est dans
+[`docs/dossier-deploiement-azure.md`](../docs/dossier-deploiement-azure.md) §3. L'essentiel :
 
-Une fois l'infra en place et le code prêt (image Docker Streamlit du chantier), configure
-les variables d'environnement de l'app, puis déploie — depuis ta session `az` :
-
-```bash
-# <domain> = az containerapp env show -g <resource-group> -n <containerapp-env> --query properties.defaultDomain -o tsv
-
-# 1a. Poser les secrets (sensibles). `secret set`, PAS `update --secrets`.
-#     DB_URL est mis en secret car il contient le mot de passe Postgres.
-az containerapp secret set -g <resource-group> -n <app-name> --secrets \
-  dburl="postgresql+psycopg://app:<pgpass>@<app-name>-pg.internal.<domain>:5432/velmo" \
-  azkey=<kimi-key> \
-  safetykey=<safety-key>
-
-# 1b. Poser les variables d'env (les sensibles pointent vers les secrets ci-dessus).
-#     env + secrets sont portés d'une révision à l'autre.
-az containerapp update -g <resource-group> -n <app-name> --set-env-vars \
-  DB_URL=secretref:dburl \
-  CHROMA_URL="http://<app-name>-chroma.internal.<domain>:8000" \
-  AZURE_AI_INFERENCE_ENDPOINT="<kimi-endpoint>" \
-  AZURE_AI_INFERENCE_MODEL="Kimi-K2.6" \
-  AZURE_AI_INFERENCE_API_KEY=secretref:azkey \
-  AZURE_CONTENT_SAFETY_ENDPOINT="<safety-endpoint>" \
-  AZURE_CONTENT_SAFETY_KEY=secretref:safetykey \
-  HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-
-# 2. Build + push + déploiement (crée un ACR au premier appel).
-az containerapp up --source . --name <app-name> --resource-group <resource-group> \
-  --target-port 8000 --ingress external
-```
+| Variable | Valeur | Sensible |
+|---|---|---|
+| `DB_URL` | `postgresql+psycopg://<user>:<mdp>@<pg-server>.postgres.database.azure.com:5432/velmo?sslmode=require` | oui (mot de passe) |
+| `AZURE_AI_INFERENCE_ENDPOINT` / `_MODEL` | endpoint Foundry / `gpt-5.6-terra` | non |
+| `AZURE_AI_INFERENCE_API_KEY` | clé Foundry | oui |
+| `AZURE_CONTENT_SAFETY_ENDPOINT` / `_KEY` | endpoint / clé Content Safety | la clé |
+| `CHROMA_URL` | `http://localhost:8001` (le sidecar) | non |
+| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` (baké dans l'image) | non |
+| `HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` | `1` — embeddings hors-ligne au runtime | non |
+| `WEBSITES_PORT` | `8000` — le port que Streamlit expose à l'App Service | non |
 
 Le build télécharge le modèle d'embedding depuis HuggingFace (il faut que HF soit joignable
-**à ce moment-là**) ; le runtime, lui, est ensuite hors-ligne (`HF_HUB_OFFLINE=1`).
+**à ce moment-là**) ; le runtime, lui, est ensuite hors-ligne.
 
-Content Safety et Kimi réutilisent la ressource Azure AI existante (`AZURE_CONTENT_SAFETY_*`
-et `AZURE_AI_INFERENCE_*` de ton `.env`) — rien à créer.
+## Déployer
+
+Automatisé et conditionné à la porte de qualité : un tag `v*.*.*` déclenche
+[`release.yml`](../.github/workflows/release.yml) (éval + note globale, livraison bloquée
+sous le seuil), et [`deploy.yml`](../.github/workflows/deploy.yml) ne démarre **que si
+`release` a réussi**. Il construit l'image dans l'ACR et redémarre la Web App.
+L'authentification est **OIDC** : aucun credential Azure n'est stocké dans le dépôt.
+
+Repli manuel, depuis une session `az login` :
+
+```bash
+az acr build --registry <acr-name> --image velmo:<version> --image velmo:latest \
+  --build-arg VELMO_VERSION=<version> .
+az webapp restart -g <resource-group> -n <app-name>
+az webapp show -g <resource-group> -n <app-name> --query defaultHostName -o tsv
+```
 
 ## Rollback
 
-Lister les révisions et réactiver la précédente — instantané, sans rebuild :
+Chaque déploiement pousse deux tags : `velmo:<version>` (immuable) et `velmo:latest` (celui
+que la Web App tire au démarrage). Revenir en arrière consiste à repointer `latest` sur la
+version précédente, puis redémarrer :
 
 ```bash
-az containerapp revision list -g <resource-group> -n <app-name> -o table
-az containerapp revision set-active -g <resource-group> -n <app-name> --revision <révision-précédente>
+az acr import --name <acr-name> --source <acr-name>.azurecr.io/velmo:<version-précédente> \
+  --image velmo:latest --force
+az webapp restart -g <resource-group> -n <app-name>
+```
+
+## Journaux
+
+Le **Log stream** de l'App Service donne stdout/stderr en temps réel — rien à provisionner,
+seule la journalisation applicative est à activer :
+
+```bash
+az webapp log config -g <resource-group> -n <app-name> --application-logging filesystem
+az webapp log tail   -g <resource-group> -n <app-name>
 ```
 
 ## Cœur CI (indépendant d'Azure)
@@ -108,7 +121,7 @@ az containerapp update -g <resource-group> -n <app-name> --set-env-vars \
 ```
 
 Ce qui apparaît alors dans le dashboard, par tour : la latence, le coût (tokens
-Kimi), la catégorie de garde-fou déclenchée, l'escalade et les erreurs d'outils.
+gpt-5.6-terra), la catégorie de garde-fou déclenchée, l'escalade et les erreurs d'outils.
 Les tours d'un même client sont regroupés en conversation (`session_id`).
 
 **Attention à ce que poser ces clés implique réellement.** Le message brut avant
@@ -153,7 +166,7 @@ par l'observation racine `handle-turn`. Rien à mapper d'exotique.
 
 Prérequis : les clés Langfuse sont posées (section précédente), et une **LLM
 Connection** est configurée dans Langfuse (Settings → LLM Connections) avec un modèle
-supportant les **sorties structurées**. Vérifié en pratique avec `Kimi-K2.6` via Azure
+supportant les **sorties structurées**. Vérifié en pratique avec `gpt-5.6-terra` via Azure
 Foundry.
 
 1. Dans le projet Langfuse : créer un évaluateur à partir du template **relevance**

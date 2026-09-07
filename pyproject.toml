@@ -19,7 +19,7 @@ vector = [
     "chromadb>=0.5,<0.6",
     "sentence-transformers>=3,<4",
 ]
-# LLM via Azure AI Inference (Kimi-K2.6).
+# LLM via Azure AI Inference (gpt-5.6-terra).
 llm = [
     "langchain-azure-ai>=1.0,<2.0",
     "azure-ai-inference>=1.0.0b9",

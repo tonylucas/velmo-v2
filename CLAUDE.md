@@ -125,7 +125,7 @@ LLM sans élaguer le state (`Agent.get_state(user_id)` restitue l'historique com
   L'**écriture mémoire** est branchée (chantier 003b) : à chaque tour,
   `Agent.respond` passe le message dans `velmo.memory.extract.get_extractor()`
   (`DeterministicExtractor` hors-ligne / `LangMemExtractor` — LangMem stateless sur
-  Kimi — en prod) et écrit les faits durables via le `FactStore`. Contrat
+  gpt-5.6-terra — en prod) et écrit les faits durables via le `FactStore`. Contrat
   d'éligibilité : seulement des faits durables sur le client (hors-sujet → rien).
   Couvre R4 (extraction à l'arrivée → rien de perdu au-delà des 30 messages) et
   rend R2 automatique.
@@ -174,7 +174,7 @@ la même interface `search(query, k) -> list[dict]` avec `source`/`snippet`.
 
 ### LLM (`src/velmo/llm.py`)
 
-`get_chat_model()` retourne un `AzureAIOpenAIApiChatModel` (Kimi-K2.6 via `langchain-azure-ai`, import
+`get_chat_model()` retourne un `AzureAIOpenAIApiChatModel` (gpt-5.6-terra via `langchain-azure-ai`, import
 différé) si `AZURE_AI_INFERENCE_ENDPOINT` est défini, sinon `OfflineChatModel` (accusé de réception
 déterministe, sans tool-calling). L'agent est un `StateGraph` (`velmo.agent_graph`) : le nœud
 déterministe (`velmo.routing`) route la majorité des intentions sans LLM, et ne bascule sur le nœud LLM
