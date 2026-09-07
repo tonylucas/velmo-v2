@@ -2,14 +2,41 @@
 
 Assistant de support pour **Velmo**, boutique en ligne de maillots de foot collector (rééditions vintage, pièces signées, éditions limitées en stock très limité). L'agent traite la gestion de commandes de niveau 1 — statut et suivi, disponibilité, modification/annulation avant expédition, retours, remboursements simples, FAQ — en gardant le contexte du client dans le temps.
 
-## Features
+---
 
-- Outils métier connectés à la base : commandes, suivi, stock, retours, remboursements, escalade
-- Garde-fous métier intégrés : isolation par client, blocage des modifications après expédition, plafond de remboursement (50 €) avec escalade
-- FAQ par recherche sémantique (RAG) sur la base de connaissances Velmo
-- Mémoire durable et isolée par client : extraction automatique des faits durables (FactStore Chroma/local), droit à l'oubli (RGPD) et inspection
-- Garde-fous de contenu en entrée/sortie (à construire)
-- Chaîne qualité MLOps : évaluation, note globale, seuil bloquant en CI (à construire)
+> **Agent de support e-commerce en production sur Azure** : mémoire persistante isolée par
+> client, garde-fous en entrée et en sortie, et une note de qualité qui bloque la livraison
+> en CI sous 0,90. Postgres pour l'état métier, Chroma pour la mémoire long terme et la FAQ.
+
+Reconstruit de zéro sur un brief imposé ([`docs/brief.md`](docs/brief.md)) et une suite
+d'acceptance fournie d'avance, puis mis en ligne sur un second brief
+([`docs/brief-azure.md`](docs/brief-azure.md)). Les trois exigences non négociables du
+brief — mémoire (R1–R6), garde-fous, qualité mesurée — sont les trois modules ci-dessous.
+
+<p align="center">
+  <a href="docs/img/deploiement-azure.png">
+    <img src="docs/img/deploiement-azure.png" alt="Le navigateur atteint le conteneur Velmo sur Azure App Service ; le tour y traverse garde-fou d'entrée, lecture mémoire, LLM, garde-fou de sortie, écriture mémoire ; l'état métier et la mémoire court terme vont en PostgreSQL, la mémoire long terme en Chroma sur un volume Azure Files, les secrets arrivent par les paramètres d'application, la latence et le coût partent vers Langfuse." width="820">
+  </a>
+  <br><em>Déploiement cible sur Azure : la chaîne garde-fous → mémoire → LLM → garde-fous
+  est préservée en ligne, et aucun secret ne vit dans le dépôt — cliquer pour agrandir.</em>
+</p>
+
+| Ce que le projet a demandé | Où le lire |
+|---|---|
+| **Mémoire d'agent sur six exigences** : court terme par checkpointer LangGraph keyé sur l'utilisateur, long terme en faits typés (sémantique vs épisodique) avec extraction à chaque tour — donc rien de perdu au-delà de la fenêtre —, isolation, droit à l'oubli RGPD et inspection | [`memory/`](src/velmo/memory/), [`fact_store.py`](src/velmo/memory/fact_store.py), [`extract.py`](src/velmo/memory/extract.py), [`memory_tools.py`](src/velmo/tools/memory_tools.py) |
+| **Garde-fous en deux étages** : détecteurs déterministes hors-ligne (injection, hors-périmètre, PII par Luhn/IBAN, fuite de secrets) renforcés par Azure AI Content Safety en prod, masquage plutôt que blocage quand c'est possible, et un journal de conformité qui reste local | [`guardrails/engine.py`](src/velmo/guardrails/engine.py), [`detectors.py`](src/velmo/guardrails/detectors.py), [`content_safety.py`](src/velmo/guardrails/content_safety.py) |
+| **Évaluation et gate de livraison** : trois suites rejouées sur `eval/*.jsonl`, note globale versionnée par tag git, seuil bloquant en CI, et un agent volontairement dégradé qui doit noter *moins* — la preuve que le gate détecte une régression | [`mlops/`](src/velmo/mlops/), [`suites/`](src/velmo/mlops/suites/), [`eval.yml`](.github/workflows/eval.yml), [`test_mlops.py`](tests/acceptance/test_mlops.py) |
+| **Routage déterministe avant le LLM** : regex d'intention et de numéro de commande traitent la majorité des tours sans appel de modèle ; le nœud LLM outillé (ReAct, 13 outils : 10 métier + 3 mémoire) n'est atteint que si rien ne matche — moins de coût, moins de surface d'hallucination | [`agent_graph.py`](src/velmo/agent_graph.py), [`routing.py`](src/velmo/routing.py), [`agent_tools.py`](src/velmo/agent_tools.py) |
+| **Règles métier dans l'outil, pas à côté** : isolation par propriétaire de commande, modification interdite après expédition, plafond de remboursement à 50 € — chaque dépassement crée une escalade au lieu d'échouer en silence | [`tools/_common.py`](src/velmo/tools/_common.py), [`tools/refunds.py`](src/velmo/tools/refunds.py), [`tools/orders.py`](src/velmo/tools/orders.py) |
+| **Observabilité de production** : Langfuse (un span par tour, tokens, coût, latence, catégorie de garde-fou déclenchée) avec masquage à l'export, doublée d'un `TurnLog` in-process qui voit ce qui tourne hors du graphe | [`observability.py`](src/velmo/observability.py), [`turn_log.py`](src/velmo/turn_log.py), [`infra/README.md`](infra/README.md) |
+| **Déploiement et CI/CD** : image construite dans ACR, connexion Azure par OIDC (aucun credential stocké), déploiement conditionné à la réussite du gate d'éval sur le tag, rollback par révision | [`deploy.yml`](.github/workflows/deploy.yml), [`release.yml`](.github/workflows/release.yml), [`Dockerfile`](Dockerfile), [`infra/provision.sh`](infra/provision.sh) |
+
+**Mesuré, pas affirmé** — note globale **0,954** (mémoire 0,917 · blocage des catégories
+interdites 1,000 · faux positifs 0,000 sur 35 cas · qualité 1,000) pour un seuil bloquant
+à 0,90, et **246 tests passent** (`uv sync --extra obs && make test`). Chiffres régénérables
+par `make eval`, qui écrit une ligne par version dans `mlops/report.md`.
+
+---
 
 ## Stack
 
@@ -46,8 +73,9 @@ Vous : Quels sont les frais de port en France ?
 Velmo : D'après notre FAQ (frais-de-port.md) : France métropolitaine : 6,90 € …
 ```
 
-À ce stade l'agent sait parler à la base et à la FAQ, **mais sans mémoire durable,
-sans garde-fous de contenu et sans chaîne qualité** — c'est ce qui reste à construire.
+L'interface de démonstration Streamlit (`make demo`) ajoute un onglet « 🔍 Déroulé » qui
+montre, tour par tour, le verdict des garde-fous, les faits mémoire lus et écrits, le
+chemin pris dans le graphe et les appels d'outils.
 
 ## Graphe de l'agent
 
@@ -88,9 +116,12 @@ src/velmo/
   sampledata.py     Jeu de données de référence
   tools/            10 outils métier (accès Postgres + FAQ)
   memory/           Mémoire court terme (checkpointer) + long terme (FactStore, faits, oubli, inspection)
-  guardrails/       Garde-fous de contenu entrée/sortie (à construire)
-  mlops/            Évaluation, note globale, seuil, rapport (à construire)
-docs/reco_expert.md Note de recommandations (stack + exigences)
+  guardrails/       Garde-fous de contenu entrée/sortie (détecteurs locaux + Content Safety)
+  mlops/            Évaluation (3 suites), note globale, seuil bloquant, rapport
+  observability.py  Traçage Langfuse (NoOpTracer sans clés)
+  turn_log.py       Journal in-process d'un tour (alimente la démo et les tests)
+docs/               Briefs, note de recommandations, specs de conception, schémas
+infra/              Runbook Azure + script de provisionnement
 kb/docs/            Base de connaissances FAQ
 scripts/            seed.py (Postgres) + seed_kb.py (Chroma)
 alembic/            Migrations
@@ -104,7 +135,9 @@ tests/acceptance/   Suite d'acceptance + tests métier
 ```bash
 make migrate    # alembic upgrade head
 make seed-kb    # ingestion FAQ dans Chroma
-make test       # suite d'acceptance + tests métier
+make test       # suite complète (246 tests)
+make eval       # évaluation + note globale + écriture de mlops/report.md
+make demo       # interface Streamlit avec le déroulé d'un tour
 make fmt        # ruff format + autofix
 make typecheck  # mypy
 make down       # arrête les services
