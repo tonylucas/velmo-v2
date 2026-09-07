@@ -6,8 +6,8 @@ def test_explicit_url():
 
 
 def test_internal_fqdn():
-    assert parse_chroma_url("http://velmo2-tony-chroma.internal.foo.io:8000") == (
-        "velmo2-tony-chroma.internal.foo.io",
+    assert parse_chroma_url("http://velmo-chroma.internal.foo.io:8000") == (
+        "velmo-chroma.internal.foo.io",
         8000,
     )
 

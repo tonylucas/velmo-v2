@@ -48,10 +48,10 @@ tag : un gate rouge fait échouer `release`, donc `deploy` ne démarre jamais. L
 dans `github.event.workflow_run.head_branch` et le checkout doit le passer explicitement
 (le ref par défaut d'un `workflow_run` est `main`). Séquence, une fois le gate vert :
 1. Build de l'image Docker de la démo, push vers un **Azure Container Registry** (ACR).
-2. `az containerapp update -n velmo2-tony --image <acr>/velmo:<tag>` → **nouvelle
+2. `az containerapp update -n <app-name> --image <acr>/velmo:<tag>` → **nouvelle
    révision** de la Container App.
 3. **Rollback** = réactiver la révision précédente :
-   `az containerapp revision set-active -n velmo2-tony --revision <précédente>`.
+   `az containerapp revision set-active -n <app-name> --revision <précédente>`.
    Instantané, natif, sans rebuild.
 
 Auth GitHub → Azure : **secret de service principal** (`AZURE_CREDENTIALS`, JSON
@@ -64,7 +64,7 @@ CI seul.
 > principal, donc `deploy.yml` ne peut pas s'activer ici. `deploy.yml` reste livré (prêt
 > pour un abonnement non bridé), mais le déploiement se fait à la main depuis la session
 > `az` de l'utilisateur (qui a les droits de gérer les Container Apps) :
-> `az containerapp up --source . --name velmo2-tony --resource-group tlucasRG`.
+> `az containerapp up --source . --name <app-name> --resource-group <resource-group>`.
 > Le rollback par révisions reste identique. C'est la même « couche détachable » : le cœur
 > CI (§2a) est intact ; seul le *déclencheur* du deploy change (manuel vs tag).
 
@@ -80,13 +80,13 @@ sont disponibles. Topologie effective :
 
 | Composant | Rôle | Hébergement | Persistance |
 |---|---|---|---|
-| **App** `velmo2-tony` | démo Streamlit | Container App, ingress **externe** :8000 | stateless |
-| **Postgres** `velmo2-tony-pg` | catalogue/clients/commandes | Container App `postgres:16-alpine`, ingress **interne** TCP :5432 | **éphémère → re-seed au démarrage** (données déterministes, rien de perdu) |
-| **Chroma** `velmo2-tony-chroma` | `velmo_memory` + `velmo_faq` | Container App `chromadb/chroma:0.5.23`, ingress **interne** TCP :8000, 1 réplica | **éphémère** (persistent au sein d'une session via `minReplicas=1` ; volume Azure Files **branchable via le portail** plus tard, cf. §7) |
+| **App** `<app-name>` | démo Streamlit | Container App, ingress **externe** :8000 | stateless |
+| **Postgres** `<app-name>-pg` | catalogue/clients/commandes | Container App `postgres:16-alpine`, ingress **interne** TCP :5432 | **éphémère → re-seed au démarrage** (données déterministes, rien de perdu) |
+| **Chroma** `<app-name>-chroma` | `velmo_memory` + `velmo_faq` | Container App `chromadb/chroma:0.5.23`, ingress **interne** TCP :8000, 1 réplica | **éphémère** (persistent au sein d'une session via `minReplicas=1` ; volume Azure Files **branchable via le portail** plus tard, cf. §7) |
 | **Content Safety** (existante) | garde-fous prod (modération entrée) | ressource Azure AI **déjà provisionnée** (`eagwu-0283-resource`, partagée avec Kimi) — **réutilisée** | — |
-| **Storage** `storagetonylucas` | file share `chromadata` | Storage Account (LRS) | créé, **non branché** (volume Chroma optionnel via portail) |
+| **Storage** `<storage-account>` | file share `chromadata` | Storage Account (LRS) | créé, **non branché** (volume Chroma optionnel via portail) |
 
-Tout dans le RG `tlucasRG`, l'environnement ACA `Velmo2Tony`, région `swedencentral`.
+Tout dans le RG `<resource-group>`, l'environnement ACA `<containerapp-env>`, région `swedencentral`.
 Networking interne ACA : l'app joint Postgres et Chroma par le DNS interne de
 l'environnement (`<app>.internal.<defaultDomain>`), jamais exposés publiquement.
 
@@ -103,14 +103,14 @@ les garde-fous se rabattent sur la détection déterministe locale (déjà gér�
 flowchart TB
     User([Utilisateur navigateur]) -->|HTTPS public| App
 
-    subgraph RG["Resource Group: tlucasRG — swedencentral"]
-        subgraph ENV["Environnement ACA: Velmo2Tony"]
-            App["Container App: velmo2-tony<br/>Streamlit (notre image)<br/>ingress EXTERNE :8000"]
-            PG["Container App: velmo2-tony-pg<br/>postgres:16-alpine<br/>ingress INTERNE TCP :5432<br/>éphémère → re-seed au démarrage"]
-            Chroma["Container App: velmo2-tony-chroma<br/>chromadb/chroma:0.5.23<br/>ingress INTERNE TCP :8000<br/>1 réplica — éphémère"]
+    subgraph RG["Resource Group: <resource-group> — swedencentral"]
+        subgraph ENV["Environnement ACA: <containerapp-env>"]
+            App["Container App: <app-name><br/>Streamlit (notre image)<br/>ingress EXTERNE :8000"]
+            PG["Container App: <app-name>-pg<br/>postgres:16-alpine<br/>ingress INTERNE TCP :5432<br/>éphémère → re-seed au démarrage"]
+            Chroma["Container App: <app-name>-chroma<br/>chromadb/chroma:0.5.23<br/>ingress INTERNE TCP :8000<br/>1 réplica — éphémère"]
         end
 
-        subgraph STG["Storage: storagetonylucas (créé, non branché)"]
+        subgraph STG["Storage: <storage-account> (créé, non branché)"]
             Share["File share: chromadata<br/>(Azure Files)"]
         end
     end
@@ -135,14 +135,14 @@ flowchart TB
 
 Injectées via `az containerapp update` (secrets pour le sensible, env-vars pour le reste) :
 
-- `DB_URL=postgresql+psycopg://app:<pgpass>@velmo2-tony-pg.internal.<domain>:5432/velmo`
-- `CHROMA_URL=http://velmo2-tony-chroma.internal.<domain>:8000`
+- `DB_URL=postgresql+psycopg://app:<pgpass>@<app-name>-pg.internal.<domain>:5432/velmo`
+- `CHROMA_URL=http://<app-name>-chroma.internal.<domain>:8000`
 - `AZURE_AI_INFERENCE_ENDPOINT`, `AZURE_AI_INFERENCE_API_KEY` (secret), `AZURE_AI_INFERENCE_MODEL`
 - `AZURE_CONTENT_SAFETY_ENDPOINT`, `AZURE_CONTENT_SAFETY_KEY` (secret) — réutilisés depuis `.env`
 - `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1` (embeddings depuis le modèle **baké dans
   l'image**, cf. §5) — jamais de contact HuggingFace au runtime.
 
-`<domain>` = `az containerapp env show -g tlucasRG -n Velmo2Tony --query properties.defaultDomain -o tsv`.
+`<domain>` = `az containerapp env show -g <resource-group> -n <containerapp-env> --query properties.defaultDomain -o tsv`.
 
 ## 5. Changements de code (déployabilité)
 
@@ -171,7 +171,7 @@ Injectées via `az containerapp update` (secrets pour le sensible, env-vars pour
 
 ### Phase 0 — TOI, provisioning (Azure Cloud Shell, `bash`, `az` déjà authentifié)
 
-Déjà fait : app `velmo2-tony` (2 Gio), env `Velmo2Tony`, storage `storagetonylucas`.
+Déjà fait : app `<app-name>` (2 Gio), env `<containerapp-env>`, storage `<storage-account>`.
 Reste (je fournirai le bloc exact au moment de l'implémentation ; forme) :
 
 > À lire d'abord : on ne clique plus dans le portail, on tape des commandes `az`
@@ -181,10 +181,10 @@ Reste (je fournirai le bloc exact au moment de l'implémentation ; forme) :
 
 ```bash
 # --- Raccourcis : nos noms de ressources, pour ne pas les répéter à chaque ligne ---
-RG=tlucasRG            # Resource Group = le "dossier" qui regroupe toutes nos ressources
-ENV=Velmo2Tony        # l'environnement Container Apps (le "réseau privé" commun à nos conteneurs)
+RG=<resource-group>            # Resource Group = le "dossier" qui regroupe toutes nos ressources
+ENV=<containerapp-env>        # l'environnement Container Apps (le "réseau privé" commun à nos conteneurs)
 LOC=swedencentral     # la région Azure (le datacenter) où tout est hébergé
-STG=storagetonylucas  # le compte de stockage (le "disque dur externe" persistant)
+STG=<storage-account>  # le compte de stockage (le "disque dur externe" persistant)
 
 # === 1. Le disque persistant de Chroma ===
 # Récupère la clé d'accès du compte de stockage (comme un mot de passe du disque).
@@ -209,7 +209,7 @@ az containerapp env storage set -g $RG -n $ENV --storage-name chromastore \
 #   secretref:pgpass : le conteneur lit le mot de passe depuis ce secret.
 # Pas de disque persistant ici : les données (clients, commandes) sont recréées au
 # démarrage par notre seed — elles sont déterministes, donc rien n'est perdu.
-az containerapp create -g $RG -n velmo2-tony-pg --environment $ENV \
+az containerapp create -g $RG -n <app-name>-pg --environment $ENV \
   --image postgres:16-alpine --transport tcp --ingress internal \
   --target-port 5432 --exposed-port 5432 --min-replicas 1 --max-replicas 1 \
   --cpu 0.5 --memory 1.0Gi --secrets pgpass=<motdepasse> \
@@ -219,7 +219,7 @@ az containerapp create -g $RG -n velmo2-tony-pg --environment $ENV \
 # Ici on passe par un fichier YAML (chroma-app.yaml, que je fournirai) car "brancher un
 # volume" (le dossier chromastore de l'étape 1 sur /chroma/chroma) ne se fait pas en
 # options simples. Ingress interne HTTP :8000, joignable seulement par l'app.
-az containerapp create -g $RG -n velmo2-tony-chroma --environment $ENV --yaml chroma-app.yaml
+az containerapp create -g $RG -n <app-name>-chroma --environment $ENV --yaml chroma-app.yaml
 
 # === 4. Content Safety : RIEN À FAIRE ===
 # Tu as déjà une ressource Azure AI (eagwu-0283-resource, celle de Kimi) avec son

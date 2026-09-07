@@ -13,7 +13,7 @@
 - All code, identifiers, docstrings, comments, commit messages **in English**. Only user-facing product text stays French.
 - `ruff format` + `ruff check` clean; `mypy src/velmo` clean on new/changed Python. `mypy src` (whole tree) has pre-existing unrelated errors — out of scope; only touched files must stay clean.
 - Verification tooling available: `pytest`, `ruff`, `mypy`, `docker`, `python -c "import yaml"`. **Not** available: `shellcheck`, `hadolint`, `actionlint` — verify shell with `bash -n`, YAML with `yaml.safe_load`.
-- Exact Azure names (verbatim): RG `tlucasRG`, ACA env `Velmo2Tony`, region `swedencentral`, app `velmo2-tony`, Postgres app `velmo2-tony-pg`, Chroma app `velmo2-tony-chroma`, storage `storagetonylucas`, file share `chromadata`, env storage name `chromastore`.
+- Exact Azure names (verbatim): RG `<resource-group>`, ACA env `<containerapp-env>`, region `swedencentral`, app `<app-name>`, Postgres app `<app-name>-pg`, Chroma app `<app-name>-chroma`, storage `<storage-account>`, file share `chromadata`, env storage name `chromastore`.
 - Env var contract (from `.env.example`): `DB_URL` (`postgresql+psycopg://…`), `CHROMA_URL` (`http://host:port`), `AZURE_AI_INFERENCE_ENDPOINT/_API_KEY/_MODEL`, `AZURE_CONTENT_SAFETY_ENDPOINT/_KEY`, `EVAL_MIN_SCORE` (default `0.8`), `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE`.
 - Content Safety resource already exists (`eagwu-0283-resource`) — reuse the `.env` endpoint/key, never create one.
 - Embedding model `intfloat/multilingual-e5-small` is **baked into the image at build** (needs HuggingFace reachable during build only); runtime is offline (`HF_HUB_OFFLINE=1`).
@@ -68,8 +68,8 @@ def test_explicit_url():
 
 
 def test_internal_fqdn():
-    assert parse_chroma_url("http://velmo2-tony-chroma.internal.foo.io:8000") == (
-        "velmo2-tony-chroma.internal.foo.io",
+    assert parse_chroma_url("http://<app-name>-chroma.internal.foo.io:8000") == (
+        "<app-name>-chroma.internal.foo.io",
         8000,
     )
 
@@ -516,7 +516,7 @@ git commit -m "ci: tag-triggered eval gate and versioned GitHub Release"
 - Create: `.github/workflows/deploy.yml`
 - Create: `infra/chroma-app.yaml`
 
-**Why:** on a tag, after the gate, build the image in ACR and roll a new revision of `velmo2-tony`. Isolated so it can be deleted to fall back to the CI core. `chroma-app.yaml` is the Chroma Container App definition (volume mount) referenced by the phase-0 runbook.
+**Why:** on a tag, after the gate, build the image in ACR and roll a new revision of `<app-name>`. Isolated so it can be deleted to fall back to the CI core. `chroma-app.yaml` is the Chroma Container App definition (volume mount) referenced by the phase-0 runbook.
 
 - [ ] **Step 1: Write `deploy.yml`**
 
@@ -547,7 +547,7 @@ jobs:
           ACR: ${{ secrets.ACR_NAME }}
           TAG: ${{ github.ref_name }}
       - name: Roll a new Container App revision
-        run: az containerapp update -g tlucasRG -n velmo2-tony --image "$ACR.azurecr.io/velmo:$TAG"
+        run: az containerapp update -g <resource-group> -n <app-name> --image "$ACR.azurecr.io/velmo:$TAG"
         env:
           ACR: ${{ secrets.ACR_NAME }}
           TAG: ${{ github.ref_name }}
@@ -560,7 +560,7 @@ jobs:
 # Referenced by the phase-0 runbook: az containerapp create ... --yaml infra/chroma-app.yaml
 # Replace <sub> with the subscription id before running.
 properties:
-  environmentId: /subscriptions/<sub>/resourceGroups/tlucasRG/providers/Microsoft.App/managedEnvironments/Velmo2Tony
+  environmentId: /subscriptions/<sub>/resourceGroups/<resource-group>/providers/Microsoft.App/managedEnvironments/<containerapp-env>
   configuration:
     ingress:
       external: false
@@ -619,8 +619,8 @@ Copy the annotated phase-0 runbook and the activation/rollback sections from
 
 List revisions and reactivate the previous good one (instant, no rebuild):
 
-    az containerapp revision list -g tlucasRG -n velmo2-tony -o table
-    az containerapp revision set-active -g tlucasRG -n velmo2-tony --revision <previous-revision>
+    az containerapp revision list -g <resource-group> -n <app-name> -o table
+    az containerapp revision set-active -g <resource-group> -n <app-name> --revision <previous-revision>
 ```
 
 The `## Phase 2 — activation (once)` body is:
@@ -634,10 +634,10 @@ The `## Phase 2 — activation (once)` body is:
    - repository variable `EVAL_MIN_SCORE` = `0.8`
 2. Set the app's runtime config once (env vars + secrets carry across revisions):
 
-       az containerapp update -g tlucasRG -n velmo2-tony \
+       az containerapp update -g <resource-group> -n <app-name> \
          --set-env-vars \
-           DB_URL="postgresql+psycopg://app:<pgpass>@velmo2-tony-pg.internal.<domain>:5432/velmo" \
-           CHROMA_URL="http://velmo2-tony-chroma.internal.<domain>:8000" \
+           DB_URL="postgresql+psycopg://app:<pgpass>@<app-name>-pg.internal.<domain>:5432/velmo" \
+           CHROMA_URL="http://<app-name>-chroma.internal.<domain>:8000" \
            AZURE_AI_INFERENCE_ENDPOINT="<kimi-endpoint>" AZURE_AI_INFERENCE_MODEL="Kimi-K2.6" \
            AZURE_CONTENT_SAFETY_ENDPOINT="<safety-endpoint>" \
            HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
@@ -646,7 +646,7 @@ The `## Phase 2 — activation (once)` body is:
            AZURE_CONTENT_SAFETY_KEY=secretref:safetykey \
          --cpu 1.0 --memory 2.0Gi --target-port 8000 --ingress external
 
-   `<domain>` = `az containerapp env show -g tlucasRG -n Velmo2Tony --query properties.defaultDomain -o tsv`.
+   `<domain>` = `az containerapp env show -g <resource-group> -n <containerapp-env> --query properties.defaultDomain -o tsv`.
 3. Branch protection on `main`: require the `eval / gate` check to pass before merge.
 4. First deploy: push a tag `v1.0.0` (or run `az containerapp up --source .` once to
    create the ACR and the first image), then confirm the public URL loads.

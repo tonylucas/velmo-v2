@@ -49,3 +49,8 @@ mlops/*.json
 
 # Streamlit local secrets (never commit)
 .streamlit/secrets.toml
+
+# Agent tooling (local to the developer's machine, not part of the project)
+.agents/
+.claude/
+skills-lock.json
