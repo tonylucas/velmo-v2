@@ -999,9 +999,9 @@ Pour l'activer :
 2. Les poser sur la Container App — la clé secrète est un **secret**, pas une variable :
 
 ```bash
-az containerapp secret set -g tlucasRG -n velmo2-tony --secrets lfsecret=<sk-lf-...>
+az containerapp secret set -g <resource-group> -n <app-name> --secrets lfsecret=<sk-lf-...>
 
-az containerapp update -g tlucasRG -n velmo2-tony --set-env-vars \
+az containerapp update -g <resource-group> -n <app-name> --set-env-vars \
   LANGFUSE_PUBLIC_KEY=<pk-lf-...> \
   LANGFUSE_SECRET_KEY=secretref:lfsecret \
   LANGFUSE_HOST=https://cloud.langfuse.com

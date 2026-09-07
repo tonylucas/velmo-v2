@@ -43,9 +43,14 @@ out/
 *.db
 chroma-data/
 
-# MLOps run artifacts
-mlops/report.md
+# MLOps run artifacts. report.md IS committed: it is the versioned score history
+# the brief asks for (one line per version), not a throwaway run artifact.
 mlops/*.json
 
 # Streamlit local secrets (never commit)
 .streamlit/secrets.toml
+
+# Agent tooling (local to the developer's machine, not part of the project)
+.agents/
+.claude/
+skills-lock.json

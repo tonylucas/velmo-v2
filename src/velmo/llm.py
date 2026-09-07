@@ -1,4 +1,4 @@
-"""Chat model factory: Azure AI Inference (Kimi-K2.6) and an offline fallback.
+"""Chat model factory: Azure AI Inference (gpt-5.6-terra) and an offline fallback.
 
 The Azure SDK import is deferred so the harness and tests run without the SDK
 or a reachable endpoint. `get_chat_model` returns a LangChain `BaseChatModel`
@@ -54,5 +54,5 @@ def get_chat_model() -> BaseChatModel:
     return AzureAIOpenAIApiChatModel(
         endpoint=os.environ["AZURE_AI_INFERENCE_ENDPOINT"],
         credential=os.environ["AZURE_AI_INFERENCE_API_KEY"],
-        model=os.environ.get("AZURE_AI_INFERENCE_MODEL", "Kimi-K2.6"),
+        model=os.environ.get("AZURE_AI_INFERENCE_MODEL", "gpt-5.6-terra"),
     )
